@@ -1,3 +1,4 @@
+import { useBackgroundWorkers } from './hooks/useBackgroundWorkers';
 import React, { useState, useRef, useCallback } from 'react';
 import { AlertOctagon, Lock, Thermometer } from 'lucide-react';
 import { usePhysicsStore, engine } from './store/physicsStore';
@@ -30,7 +31,7 @@ export default function App() {
   const { runPhysicsTick, renderVisuals } = useSimulationLoop({
       isLoggedIn, s1PathRef, s2PathRef, cwPathRef, tempPathRef, conveyorRef
   });
-
+useBackgroundWorkers(isLoggedIn, uiState.silState);
   // Action Dispatchers
   const setConfig = useCallback((key, val) => { engine.mutate(s => { s[key] = val; }); engine.commit(); }, []);
   
