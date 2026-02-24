@@ -8,7 +8,6 @@ import {
 } from '../utils/constants';
 import { SupervisoryAPC, applyStiction, getTolerableDeficiency } from '../utils/apcEngine';
 
-// Utility for dynamic SVG line generation
 export function genPath(data, key, targetVal, baseRecipeVol, isTemp = false) {
     if (data.length < 2) return "";
     const stepX = 1000 / (HISTORY_BUFFER_SIZE - 1);
@@ -34,17 +33,19 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
     const runPhysicsTick = useCallback(() => {
         engine.mutate(P => {
             if (P.eStopActive || P.silState === 'E_STOP') {
-        P.mvs.mv1 = 0; P.mvs.mv2 = 0; P.mvs.steam = 0; P.pvsMass.s1 *= 0.9; P.pvsMass.s2 *= 0.9; P.cipTemp = Math.max(25, P.cipTemp - 0.1); P.lastTick = Date.now(); return; 
+                P.mvs.mv1 = 0; P.mvs.mv2 = 0; P.mvs.steam = 0; P.pvsMass.s1 *= 0.9; P.pvsMass.s2 *= 0.9; P.cipTemp = Math.max(25, P.cipTemp - 0.1); P.lastTick = Date.now(); return; 
             }
+
+            // BUG FIX: Strictly enforce Recipe Volumes into the Target Volume
+            if (Math.abs(P.targetVol - P.baseRecipeVol) > 0.001) P.targetVol = P.baseRecipeVol;
+            const activeTargetTemp = P.activeProduct?.targetTemp || 72.0;
+
             // --- ADAPTIVE AUTO-TUNING ROUTINE ---
             if (P.tuningMode === 'AUTO') {
                 const keys = Object.keys(P.tuning);
                 keys.forEach(k => {
-                    // Smoothly converge current parameter back to the mathematically ideal state (System Identification)
                     const delta = P.ideal_tuning[k] - P.tuning[k];
-                    if (Math.abs(delta) > 0.001) {
-                        P.tuning[k] += delta * 0.02; // 2% convergence rate per tick
-                    }
+                    if (Math.abs(delta) > 0.001) P.tuning[k] += delta * 0.02; // Converge back to physical truth
                 });
             }
             if (P.silState === 'MPC_LOST') return;
@@ -60,35 +61,29 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
             P.pneumaticHealth = NOMINAL_PRESSURE - dynamicPressureDrop + (Math.random() - 0.5) * 0.1;
             const pressureDisturbance = P.pneumaticHealth - NOMINAL_PRESSURE;
   
-            const hourOfDay = (now / 30000) % 24; 
             P.ambientTemp = 23.5 + 8.5 * Math.sin(((now / 30000) % 24 - 8) * (Math.PI / 12)); 
   
-            P.mv_hist.mv1.push(P.actual_mvs.mv1); 
-            P.mv_hist.mv2.push(P.actual_mvs.mv2); 
-            P.mv_hist.steam.push(P.actual_mvs.steam);
-            if (P.mv_hist.mv1.length > 50) P.mv_hist.mv1.shift();
-            if (P.mv_hist.mv2.length > 50) P.mv_hist.mv2.shift();
-            if (P.mv_hist.steam.length > 50) P.mv_hist.steam.shift();
+            P.mv_hist.mv1.push(P.actual_mvs.mv1); P.mv_hist.mv2.push(P.actual_mvs.mv2); P.mv_hist.steam.push(P.actual_mvs.steam);
+            if (P.mv_hist.mv1.length > 50) P.mv_hist.mv1.shift(); if (P.mv_hist.mv2.length > 50) P.mv_hist.mv2.shift(); if (P.mv_hist.steam.length > 50) P.mv_hist.steam.shift();
   
-            P.req_mv_hist.mv1.push(P.mvs.mv1);
-            P.req_mv_hist.mv2.push(P.mvs.mv2);
-            P.req_mv_hist.steam.push(P.mvs.steam);
-            if (P.req_mv_hist.mv1.length > 50) P.req_mv_hist.mv1.shift();
-            if (P.req_mv_hist.mv2.length > 50) P.req_mv_hist.mv2.shift();
-            if (P.req_mv_hist.steam.length > 50) P.req_mv_hist.steam.shift();
+            P.req_mv_hist.mv1.push(P.mvs.mv1); P.req_mv_hist.mv2.push(P.mvs.mv2); P.req_mv_hist.steam.push(P.mvs.steam);
+            if (P.req_mv_hist.mv1.length > 50) P.req_mv_hist.mv1.shift(); if (P.req_mv_hist.mv2.length > 50) P.req_mv_hist.mv2.shift(); if (P.req_mv_hist.steam.length > 50) P.req_mv_hist.steam.shift();
   
             const getU = (hist, delaySec) => hist[Math.max(0, hist.length - 1 - Math.floor(delaySec / (TICK_RATE_MS / 1000)))] || 0;
   
-            // THERMAL IMC
+            // BUG FIX: Removed pneumatic pressure from temperature & Added TRUE Flow Feedforward!
             const a_temp = Math.exp(-dt_sec / 3.75); 
             const u_steam_plant = getU(P.mv_hist.steam, 0.85); 
-            P.plant.temp_y = a_temp * P.plant.temp_y + (1 - a_temp) * (20 + (u_steam_plant * 100));
-            P.pvsTemp = P.plant.temp_y + (pressureDisturbance * 1.5) + P.drift.temp + noise() * 10;
+            const plantFlowLoad = (P.actual_mvs.mv1 + P.actual_mvs.mv2);
+            
+            P.plant.temp_y = a_temp * P.plant.temp_y + (1 - a_temp) * (20 + (u_steam_plant * 100) - (plantFlowLoad * 15));
+            P.pvsTemp = P.plant.temp_y + P.drift.temp + noise() * 10;
   
             const u_steam_req = getU(P.req_mv_hist.steam, 0.85);
-            P.internal_model.temp_y = a_temp * P.internal_model.temp_y + (1 - a_temp) * (20 + (u_steam_req * 100));
+            const reqFlowLoad = (P.mvs.mv1 + P.mvs.mv2);
+            P.internal_model.temp_y = a_temp * P.internal_model.temp_y + (1 - a_temp) * (20 + (u_steam_req * 100) - (reqFlowLoad * 15));
             
-            const imc_pvsTemp = P.internal_model.temp_y + (pressureDisturbance * 1.5);
+            const imc_pvsTemp = P.internal_model.temp_y;
             const rawTempDisturbance = P.pvsTemp - imc_pvsTemp;
             const filterAlpha = Math.exp(-dt_sec / 2.0); 
             P.biases.temp = filterAlpha * P.biases.temp + (1 - filterAlpha) * rawTempDisturbance;
@@ -96,7 +91,7 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
             let tempTrajectory = new Array(60).fill(P.pvsTemp);
             if (P.opMode === 'AUTO' && P.silState === 'NORMAL') {
                 const thermalOutput = SupervisoryAPC.solveThermal(
-                    P.activeProduct.targetTemp, P.internal_model.temp_y, P.mvs.steam, P.req_mv_hist.steam, pressureDisturbance, P.biases.temp, dt_sec
+                    activeTargetTemp, P.internal_model.temp_y, P.mvs.steam, P.req_mv_hist.steam, P.biases.temp, dt_sec, reqFlowLoad
                 );
                 P.mvs.steam = thermalOutput.steamMV;
                 tempTrajectory = thermalOutput.trajectory;
@@ -133,7 +128,7 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                     const getCouplingTrajectory = () => {
                         const traj = [];
                         let temp_y21 = P.internal_model.y21;
-                        const a21 = Math.exp(-dt_sec / T.tau_21);
+                        const a21 = Math.exp(-dt_sec / Math.max(0.01, T.tau_21));
                         const thetaSteps = Math.floor(T.dt_21 / dt_sec);
                         
                         for (let k = 1; k <= 60; k++) {
@@ -162,15 +157,27 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
             P.actual_mvs.mv2 = applyStiction(P.mvs.mv2 + (P.active.s2 ? dither : 0), P.actual_mvs.mv2, VALVE_DEADBAND);
             P.actual_mvs.steam = applyStiction(P.mvs.steam + dither, P.actual_mvs.steam, VALVE_DEADBAND);
   
-            const a11 = Math.exp(-dt_sec / T.tau_11); const a22 = Math.exp(-dt_sec / T.tau_22); const a21 = Math.exp(-dt_sec / T.tau_21);
-            const u1_eff = Math.max(0, (P.actual_mvs.mv1 - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
-            const u2_eff = Math.max(0, (P.actual_mvs.mv2 - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
-            const u1_delayed_eff = Math.max(0, (getU(P.mv_hist.mv1, T.dt_21) - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
+            // BUG FIX: TRUE PLANT PHYSICS
+            // Simulation Reality should strictly follow ideal physics, independent of user's bad tuning
+            const I = P.ideal_tuning; 
+            const a11_true = Math.exp(-dt_sec / Math.max(0.01, I.tau_11)); 
+            const a22_true = Math.exp(-dt_sec / Math.max(0.01, I.tau_22)); 
+            const a21_true = Math.exp(-dt_sec / Math.max(0.01, I.tau_21));
+
+            const u1_eff_plant = Math.max(0, (P.actual_mvs.mv1 - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
+            const u2_eff_plant = Math.max(0, (P.actual_mvs.mv2 - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
+            const u1_delayed_eff_plant = Math.max(0, (getU(P.mv_hist.mv1, I.dt_21) - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
   
-            P.plant.y11 = a11 * P.plant.y11 + (1 - a11) * (T.gain_s1 * VALVE_CAPACITY_VOL * u1_eff);
-            P.plant.y22 = a22 * P.plant.y22 + (1 - a22) * (T.gain_s2 * VALVE_CAPACITY_VOL * u2_eff);
-            P.plant.y21 = a21 * P.plant.y21 + (1 - a21) * (T.coupling * VALVE_CAPACITY_VOL * u1_delayed_eff);
-  
+            P.plant.y11 = a11_true * P.plant.y11 + (1 - a11_true) * (I.gain_s1 * VALVE_CAPACITY_VOL * u1_eff_plant);
+            P.plant.y22 = a22_true * P.plant.y22 + (1 - a22_true) * (I.gain_s2 * VALVE_CAPACITY_VOL * u2_eff_plant);
+            P.plant.y21 = a21_true * P.plant.y21 + (1 - a21_true) * (I.coupling * VALVE_CAPACITY_VOL * u1_delayed_eff_plant);
+
+            // THE CONTROLLER'S INTERNAL MODEL
+            // Uses the user's manual tuning "T" sliders, creating mathematically measurable error Auto-Tune can fix
+            const a11 = Math.exp(-dt_sec / Math.max(0.01, T.tau_11)); 
+            const a22 = Math.exp(-dt_sec / Math.max(0.01, T.tau_22)); 
+            const a21 = Math.exp(-dt_sec / Math.max(0.01, T.tau_21));
+
             const u1_req_eff = Math.max(0, (P.mvs.mv1 - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
             const u2_req_eff = Math.max(0, (P.mvs.mv2 - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
             const u1_req_delayed_eff = Math.max(0, (getU(P.req_mv_hist.mv1, T.dt_21) - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV)); 
@@ -272,7 +279,7 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                         stats.stdDev = stats.count > 1 ? Math.sqrt(stats.M2 / (stats.count - 1)) : 0.0;
                     };
                     
-                    if (Math.abs(P.pvsTemp - P.activeProduct.targetTemp) < 3.0) {
+                    if (Math.abs(P.pvsTemp - activeTargetTemp) < 3.0) {
                         accumulate(P.batchStats); accumulate(P.shiftStats[P.currentShift]); accumulate(P.dayStats);
                         P.lastVolumes.push(botVol); if (P.lastVolumes.length > 120) P.lastVolumes.shift(); 
   
@@ -313,11 +320,13 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
     }, []);
 
     const renderVisuals = useCallback((P) => {
+        const visualTargetTemp = P.activeProduct?.targetTemp || 72.0; // Fallback to avoid screen crash
+        
         if (s1PathRef.current && s2PathRef.current && cwPathRef.current && tempPathRef.current && P.history.length > 1) {
             s1PathRef.current.setAttribute('d', genPath(P.history, 's1_dev', P.targetVol, P.baseRecipeVol));
             s2PathRef.current.setAttribute('d', genPath(P.history, 's2_dev', P.targetVol, P.baseRecipeVol));
             cwPathRef.current.setAttribute('d', genPath(P.history, 'cw_vol', P.targetVol, P.baseRecipeVol));
-            tempPathRef.current.setAttribute('d', genPath(P.history, 'temp', P.activeProduct.targetTemp, P.baseRecipeVol, true));
+            tempPathRef.current.setAttribute('d', genPath(P.history, 'temp', visualTargetTemp, P.baseRecipeVol, true));
         }
         
         if (conveyorRef.current) {
@@ -325,7 +334,7 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
             const bottles = P.conveyor;
             const T_val_vol = getTolerableDeficiency(P.baseRecipeVol);
             const pixelsPerL = 20 / T_val_vol; 
-            const divertMode = Math.abs(P.pvsTemp - P.activeProduct.targetTemp) >= 3.0;
+            const divertMode = Math.abs(P.pvsTemp - visualTargetTemp) >= 3.0;
   
             while (container.children.length < bottles.length) {
                 const div = document.createElement('div');
@@ -418,6 +427,5 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
         return () => cancelAnimationFrame(requestRef.current);
     }, [isLoggedIn, runPhysicsTick, renderVisuals]);
 
-    // Expose runPhysicsTick to allow "stepping" one frame manually
     return { runPhysicsTick, renderVisuals };
 }
