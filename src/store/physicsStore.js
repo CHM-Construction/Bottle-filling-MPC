@@ -13,9 +13,7 @@ class PhysicsEngineStore {
             silState: 'NORMAL', recoveryStep: 0, heartbeatActive: true, currentShift: getCurrentShift(), riskAlert: false,
             eStopActive: false, pneumaticHealth: 4.5, cipMode: false, cipTemp: 25.0, active: { s1: true, s2: true }, 
             
-            // Stiction-affected Plant History
             mv_hist: { mv1: Array(50).fill(0.450), mv2: Array(50).fill(0.450), steam: Array(50).fill(0.52) },
-            // Pure MPC Output History (For True IMC Alignment)
             req_mv_hist: { mv1: Array(50).fill(0.450), mv2: Array(50).fill(0.450), steam: Array(50).fill(0.52) },
             
             plant: { y11: 0, y22: 0, y21: 0, temp_y: 72.0 }, 
@@ -26,11 +24,13 @@ class PhysicsEngineStore {
             pvsTemp: 72.0, dynamicSG: PRODUCTS[2].sg20, mvs: { mv1: 0.450, mv2: 0.450, steam: 0.52 }, projectedTemp: 72.0,
             loads: { s1: 0.00, s2: 0.00 }, conveyor: [], nextSource: 's1', drift: { s1: 0.00, s2: 0.00, temp: 0.00 }, pssVol: { pss1: 0.50, pss2: 0.00 }, 
             
-            // BRANCH C: UNIFIED IMC BIASES (Directly corrects MPC prediction)
             biases: { s1: 0.00, s2: 0.00, temp: 0.00 },
             kalman: { x_est: 0.0, p_est: 1.0, q: 0.001, r: 0.05 }, smithBuffer: [], decouplerActive: true,
             
+            // NEW TUNING LOGIC
+            tuningMode: 'AUTO', // 'AUTO' or 'MANUAL'
             tuning: { imcLambda: 0.1, gain_s1: 1.0, gain_s2: 1.0, coupling: -0.35, bias_filter: 0.30, tau_11: 0.25, tau_22: 0.25, tau_21: 0.25, dt_21: 0.8 },
+            ideal_tuning: { imcLambda: 0.1, gain_s1: 1.0, gain_s2: 1.0, coupling: -0.35, bias_filter: 0.30, tau_11: 0.25, tau_22: 0.25, tau_21: 0.25, dt_21: 0.8 },
             
             history: [], cloudQueue: [], cloudSyncStatus: 'IDLE', cloudQueueSize: 0,
             recipeRuns: [{ id: Date.now(), recipeVol: 0.50, product: PRODUCTS[2].name, startTime: Date.now(), endTime: null, count: 0, volume: 0.0, shift: getCurrentShift(), giveawayVol: 0.0, wasteVol: 0.0, savingsVol: 0.0, t1Errors: 0, t2Errors: 0 }],
