@@ -1,6 +1,5 @@
 import { ZERO_POINT_MV, VALVE_CAPACITY_VOL } from './constants';
 
-// OIML R 87 (2016) VOLUMETRIC TOLERANCE LOOKUP
 export const getTolerableDeficiency = (nomL) => {
     if (Math.abs(nomL - 0.33) < 0.001) return 0.0099; 
     if (Math.abs(nomL - 0.50) < 0.001) return 0.0150; 
@@ -44,38 +43,41 @@ export const applyStiction = (targetMV, actualMV, stickSlipPct) => {
 // ELITE SUPERVISORY CASCADE IMC ENGINE
 // ==========================================
 export const SupervisoryAPC = {
-    // BRANCH A: THERMAL IMC (Delay-Free Prediction + Bias)
-    solveThermal: (targetTemp, internalTemp, currentSteamMV, steamHistory, pDist, biasTemp, dt) => {
-        const Np = 60; // Predict 6.0 seconds into the future
+    // BRANCH A: THERMAL IMC (Delay-Free Prediction + Bias + Flow Feedforward)
+    solveThermal: (targetTemp, internalTemp, currentSteamMV, steamHistory, biasTemp, dt, flowFF = 0) => {
+        const Np = 60; 
         const tau = 3.75; const theta = 0.85; 
         const thetaSteps = Math.floor(theta / dt);
         const a = Math.exp(-dt / tau);
         
+        // Safety fallback for missing recipe values
+        const safeTargetTemp = targetTemp || 75.0; 
         const getHist = (ticks) => steamHistory[Math.max(0, steamHistory.length - 1 - ticks)] || currentSteamMV;
 
         const simulateCost = (u_cand) => {
             let cost = 0;
-            let temp = internalTemp; // Base prediction purely on Internal Model (delay-free)
+            let temp = internalTemp; 
             
             for(let k = 1; k <= Np; k++) {
-                // Apply process dead time (history array) to early prediction steps
                 let past_u = k <= thetaSteps ? getHist(thetaSteps - k) : u_cand;
-                const steadyStateTemp = 20 + (past_u * 100);
+                
+                // TRUE FEEDFORWARD: Preemptively calculates cooling load from incoming liquid
+                const steadyStateTemp = 20 + (past_u * 100) - (flowFF * 15);
                 temp = a * temp + (1 - a) * steadyStateTemp;
                 
-                // Add the measurable pressure effect and true unmeasured disturbance from the Kalman filter
-                const pred_temp = temp + (pDist * 1.5) + biasTemp;
+                const pred_temp = temp + biasTemp; 
                 
-                const e = (targetTemp - pred_temp) / (targetTemp || 1);
+                const e = (safeTargetTemp - pred_temp) / safeTargetTemp;
                 cost += (e * e) * (k / Np); 
             }
-            return (cost / Np) + 0.1 * Math.pow(u_cand - currentSteamMV, 2);
+            // Reduced move penalty so the heater accurately targets the setpoint
+            return (cost / Np) + 0.05 * Math.pow(u_cand - currentSteamMV, 2);
         };
 
         let u_opt = currentSteamMV;
-        let v_u = 0; const lr = 0.1; const h = 0.001; const beta = 0.85;
+        let v_u = 0; const lr = 0.2; const h = 0.001; const beta = 0.85;
         
-        for(let i=0; i<15; i++) {
+        for(let i=0; i<20; i++) {
             const currentCost = simulateCost(u_opt);
             const grad = (simulateCost(u_opt + h) - currentCost) / h;
             v_u = beta * v_u + (1 - beta) * grad;
@@ -86,53 +88,54 @@ export const SupervisoryAPC = {
         let temp = internalTemp;
         for(let k = 1; k <= Np; k++) {
              let past_u = k <= thetaSteps ? getHist(thetaSteps - k) : u_opt;
-             temp = a * temp + (1 - a) * (20 + (past_u * 100));
-             trajectory.push(temp + (pDist * 1.5) + biasTemp);
+             const steadyStateTemp = 20 + (past_u * 100) - (flowFF * 15);
+             temp = a * temp + (1 - a) * steadyStateTemp;
+             trajectory.push(temp + biasTemp);
         }
 
         return { steamMV: u_opt, trajectory };
     },
 
-    // BRANCH B: FLOW MPC (Absolute Physical Model + Future Coupling + SG Feedforward + IMC Bias)
+    // BRANCH B: FLOW MPC (Absolute Physical Model + Future Coupling + SG Feedforward)
     solveValve: (targetMass, currentMV, imc_y_state, couplingTraj, sgProfile, pDistVol, biasMass, gain, tau, lambda_tuning, dt) => {
         if (targetMass <= 0.0001) return 0;
         
         const Np = 60;
-        const a = Math.exp(-dt / tau);
+        const a = Math.exp(-dt / Math.max(0.01, tau));
         const lambda = Math.max(lambda_tuning * 0.1, 0.001);
 
         const simulateCost = (u_cand) => {
             let cost = 0;
-            let y = imc_y_state; // Start exactly at the clean IMC internal model state
+            let y = imc_y_state; 
             
-            // Absolute linear aperture (0.0 to 1.0)
-            const u_eff = Math.max(0, (u_cand - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
+            // BUG FIX: "Leaky Slope" prevents Gradient Descent from flatlining in the deadband!
+            let u_eff = (u_cand - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV);
+            if (u_eff < 0) u_eff = u_eff * 0.05; 
+            else if (u_eff > 1) u_eff = 1.0 + (u_eff - 1.0) * 0.05;
             
             for(let k=0; k<Np; k++) {
                 y = a * y + (1 - a) * (gain * VALVE_CAPACITY_VOL * u_eff);
                 
-                // Read exact future shockwave from Valve 1
                 const coupling_y = couplingTraj ? couplingTraj[k] : 0;
                 const pred_vol = y + coupling_y + pDistVol; 
                 
-                // FEEDFORWARD PHYSICS + CHECKWEIGHER FEEDBACK
-                // Seamlessly integrates Thermal Expansion AND the Kalman-filtered Mass Bias
-                const pred_mass = (pred_vol * sgProfile[k]) + biasMass;
+                const safeSG = (sgProfile && sgProfile[k]) ? sgProfile[k] : 1.0;
+                const pred_mass = (pred_vol * safeSG) + biasMass;
                 
-                const err = (targetMass - pred_mass) / targetMass;
+                const err = (targetMass - pred_mass) / (targetMass || 1);
                 cost += (err * err) * ((k+1) / Np);
             }
             return (cost / Np) + lambda * Math.pow(u_cand - currentMV, 2);
         };
 
         let u_opt = currentMV;
-        let v = 0; const beta = 0.85; const h = 0.001; const lr = 0.15;
+        let v = 0; const beta = 0.85; const h = 0.001; const lr = 0.2;
         
-        for(let i=0; i<20; i++) {
+        for(let i=0; i<25; i++) {
             const currentCost = simulateCost(u_opt);
             const grad = (simulateCost(u_opt + h) - currentCost) / h;
             v = beta * v + (1 - beta) * grad;
-            u_opt = Math.max(0, Math.min(1.0, u_opt - lr * v));
+            u_opt = Math.max(0, Math.min(1.0, u_opt - lr * v)); // Clamp result securely at the end
         }
         return u_opt;
     }
