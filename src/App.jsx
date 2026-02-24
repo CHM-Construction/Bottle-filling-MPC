@@ -5,6 +5,7 @@ import { usePhysicsStore, engine } from './store/physicsStore';
 import { useSimulationLoop } from './hooks/useSimulationLoop';
 import { PRODUCTS, PRICE_PER_LITER, REWORK_COST_PER_UNIT } from './utils/constants';
 import { initStats } from './utils/apcEngine';
+import TuningPanel from './components/TuningPanel';
 
 // Components
 import Header from './components/Header';
@@ -25,7 +26,16 @@ export default function App() {
   const s2PathRef = useRef(null); 
   const cwPathRef = useRef(null); 
   const tempPathRef = useRef(null);
-  const conveyorRef = useRef(null); 
+  const conveyorRef = useRef(null);
+  const handleTuningChange = useCallback((key, value) => {
+      engine.mutate(s => { s.tuning[key] = value; });
+      engine.commit();
+  }, []);
+
+  const handleTuningMode = useCallback((mode) => {
+      engine.mutate(s => { s.tuningMode = mode; });
+      engine.commit();
+  }, []);
 
   // Initialize the engine loop
   const { runPhysicsTick, renderVisuals } = useSimulationLoop({
