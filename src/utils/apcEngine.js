@@ -50,34 +50,35 @@ export const SupervisoryAPC = {
         const thetaSteps = Math.floor(theta / dt);
         const a = Math.exp(-dt / tau);
         
-        // Safety fallback for missing recipe values
         const safeTargetTemp = targetTemp || 75.0; 
         const getHist = (ticks) => steamHistory[Math.max(0, steamHistory.length - 1 - ticks)] || currentSteamMV;
 
         const simulateCost = (u_cand) => {
             let cost = 0;
             let temp = internalTemp; 
-            
             for(let k = 1; k <= Np; k++) {
                 let past_u = k <= thetaSteps ? getHist(thetaSteps - k) : u_cand;
-                
-                // TRUE FEEDFORWARD: Preemptively calculates cooling load from incoming liquid
                 const steadyStateTemp = 20 + (past_u * 100) - (flowFF * 15);
                 temp = a * temp + (1 - a) * steadyStateTemp;
-                
                 const pred_temp = temp + biasTemp; 
-                
                 const e = (safeTargetTemp - pred_temp) / safeTargetTemp;
                 cost += (e * e) * (k / Np); 
             }
-            // Reduced move penalty so the heater accurately targets the setpoint
             return (cost / Np) + 0.05 * Math.pow(u_cand - currentSteamMV, 2);
         };
 
-        let u_opt = currentSteamMV;
-        let v_u = 0; const lr = 0.2; const h = 0.001; const beta = 0.85;
-        
-        for(let i=0; i<20; i++) {
+        // 1. Grid Search (Immune to exploding gradients)
+        let best_u = currentSteamMV;
+        let min_cost = Infinity;
+        for (let u = 0.0; u <= 1.0; u += 0.05) {
+            const cost = simulateCost(u);
+            if (cost < min_cost) { min_cost = cost; best_u = u; }
+        }
+
+        // 2. Fine-Tuning
+        let u_opt = best_u;
+        let v_u = 0; const lr = 0.05; const h = 0.001; const beta = 0.8;
+        for(let i=0; i<15; i++) {
             const currentCost = simulateCost(u_opt);
             const grad = (simulateCost(u_opt + h) - currentCost) / h;
             v_u = beta * v_u + (1 - beta) * grad;
@@ -108,10 +109,8 @@ export const SupervisoryAPC = {
             let cost = 0;
             let y = imc_y_state; 
             
-            // BUG FIX: "Leaky Slope" prevents Gradient Descent from flatlining in the deadband!
             let u_eff = (u_cand - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV);
-            if (u_eff < 0) u_eff = u_eff * 0.05; 
-            else if (u_eff > 1) u_eff = 1.0 + (u_eff - 1.0) * 0.05;
+            if (u_eff < 0) u_eff = 0; 
             
             for(let k=0; k<Np; k++) {
                 y = a * y + (1 - a) * (gain * VALVE_CAPACITY_VOL * u_eff);
@@ -128,15 +127,24 @@ export const SupervisoryAPC = {
             return (cost / Np) + lambda * Math.pow(u_cand - currentMV, 2);
         };
 
-        let u_opt = currentMV;
-        let v = 0; const beta = 0.85; const h = 0.001; const lr = 0.2;
-        
-        for(let i=0; i<25; i++) {
+        // 1. Grid Search (Immune to flatplate deadbands and exploding gradients)
+        let best_u = currentMV;
+        let min_cost = Infinity;
+        for (let u = 0.45; u <= 1.0; u += 0.02) {
+            const cost = simulateCost(u);
+            if (cost < min_cost) { min_cost = cost; best_u = u; }
+        }
+
+        // 2. Fine-Tuning
+        let u_opt = best_u;
+        let v = 0; const beta = 0.8; const h = 0.001; const lr = 0.05;
+        for(let i=0; i<15; i++) {
             const currentCost = simulateCost(u_opt);
             const grad = (simulateCost(u_opt + h) - currentCost) / h;
             v = beta * v + (1 - beta) * grad;
-            u_opt = Math.max(0, Math.min(1.0, u_opt - lr * v)); // Clamp result securely at the end
+            u_opt = Math.max(0, Math.min(1.0, u_opt - lr * v)); 
         }
+        
         return u_opt;
     }
 };
