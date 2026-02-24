@@ -34,7 +34,18 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
     const runPhysicsTick = useCallback(() => {
         engine.mutate(P => {
             if (P.eStopActive || P.silState === 'E_STOP') {
-                P.mvs.mv1 = 0; P.mvs.mv2 = 0; P.mvs.steam = 0; P.pvsMass.s1 *= 0.9; P.pvsMass.s2 *= 0.9; P.cipTemp = Math.max(25, P.cipTemp - 0.1); P.lastTick = Date.now(); return; 
+        P.mvs.mv1 = 0; P.mvs.mv2 = 0; P.mvs.steam = 0; P.pvsMass.s1 *= 0.9; P.pvsMass.s2 *= 0.9; P.cipTemp = Math.max(25, P.cipTemp - 0.1); P.lastTick = Date.now(); return; 
+            }
+            // --- ADAPTIVE AUTO-TUNING ROUTINE ---
+            if (P.tuningMode === 'AUTO') {
+                const keys = Object.keys(P.tuning);
+                keys.forEach(k => {
+                    // Smoothly converge current parameter back to the mathematically ideal state (System Identification)
+                    const delta = P.ideal_tuning[k] - P.tuning[k];
+                    if (Math.abs(delta) > 0.001) {
+                        P.tuning[k] += delta * 0.02; // 2% convergence rate per tick
+                    }
+                });
             }
             if (P.silState === 'MPC_LOST') return;
             
