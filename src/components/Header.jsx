@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, BarChart3, Play, Pause, SkipForward, Snowflake, Droplets, Droplet, Cable, Thermometer, AlertOctagon } from 'lucide-react';
+import { Activity, BarChart3, Play, Pause, SkipForward, Snowflake, Droplets, Droplet, Cable, Thermometer, AlertOctagon , Sliders } from 'lucide-react';
 import ChmLogo from './ChmLogo';
 import { RECIPES, PRODUCTS } from '../utils/constants';
 
