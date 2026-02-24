@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, BarChart3, Play, Pause, SkipForward, Snowflake, Droplets, Droplet, Cable, Thermometer, AlertOctagon , Sliders } from 'lucide-react';
+import { Activity, BarChart3, Play, Pause, SkipForward, Snowflake, Droplets, Droplet, Cable, Thermometer, AlertOctagon, Sliders } from 'lucide-react';
 import ChmLogo from './ChmLogo';
 import { RECIPES, PRODUCTS } from '../utils/constants';
 
@@ -9,26 +9,28 @@ export default function Header({ activeTab, setActiveTab, handleRecipeSelect, ha
         <div className="flex items-center gap-4 shrink-0 mr-4">
           <div className="flex items-center gap-3"><ChmLogo size={32} /><div className="hidden md:block"><h1 className="font-black text-sm tracking-wider text-white">CHM AUTOMATION</h1><p className="text-[10px] text-cyan-400 font-mono">BEVERAGE DIVISION <span className="text-slate-500">| CASCADE IMC V6.1</span></p></div></div>
           <div className="h-8 w-px bg-slate-700 hidden md:block"></div>
-            <div className="flex bg-slate-800 p-1 rounded-lg border border-slate-700 shrink-0 gap-1">
+        </div>
+        
+        <div className="flex-1 flex items-center gap-2 overflow-x-auto no-scrollbar mask-linear-fade pr-2">
+          {/* MAIN TABS */}
+          <div className="flex bg-slate-800 p-1 rounded-lg border border-slate-700 shrink-0 gap-1">
                <button onClick={() => setActiveTab('CONTROL')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-2 whitespace-nowrap ${activeTab === 'CONTROL' ? 'bg-cyan-900 text-cyan-300 border border-cyan-700 shadow-sm' : 'text-slate-400 hover:text-white hover:bg-slate-700'}`}><Activity size={14}/> PROCESS HMI</button>
                <button onClick={() => setActiveTab('DATA')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-2 whitespace-nowrap ${activeTab === 'DATA' ? 'bg-cyan-900 text-cyan-300 border border-cyan-700 shadow-sm' : 'text-slate-400 hover:text-white hover:bg-slate-700'}`}><BarChart3 size={14}/> HISTORIAN {uiState.cloudQueueSize > 0 && <span className="bg-amber-500 text-black text-[9px] px-1.5 rounded-full">{uiState.cloudQueueSize}</span>}</button>
-               {/* NEW TUNING BUTTON */}
                <button onClick={() => setActiveTab('TUNING')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-2 whitespace-nowrap ${activeTab === 'TUNING' ? 'bg-cyan-900 text-cyan-300 border border-cyan-700 shadow-sm' : 'text-slate-400 hover:text-white hover:bg-slate-700'}`}><Sliders size={14}/> ADAPTIVE TUNING</button>
           </div>
-        </div>
-        <div className="flex-1 flex items-center gap-2 overflow-x-auto no-scrollbar mask-linear-fade pr-2">
-          <div className="flex bg-slate-800 p-1 rounded-lg border border-slate-700 shrink-0 gap-1">
-               <button onClick={() => setActiveTab('CONTROL')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-2 whitespace-nowrap ${activeTab === 'CONTROL' ? 'bg-cyan-900 text-cyan-300 border border-cyan-700' : 'text-slate-400 hover:text-white'}`}><Activity size={14}/> PROCESS HMI</button>
-               <button onClick={() => setActiveTab('DATA')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-2 whitespace-nowrap ${activeTab === 'DATA' ? 'bg-cyan-900 text-cyan-300 border border-cyan-700' : 'text-slate-400 hover:text-white'}`}><BarChart3 size={14}/> HISTORIAN {uiState.cloudQueueSize > 0 && <span className="bg-amber-500 text-black text-[9px] px-1.5 rounded-full">{uiState.cloudQueueSize}</span>}</button>
-          </div>
+
           <div className="h-8 w-px bg-slate-700 hidden md:block shrink-0"></div>
+          
+          {/* SIMULATION CONTROLS */}
           <div className="flex bg-slate-800 p-1 rounded-lg border border-slate-700 shrink-0 items-center gap-1 ml-2">
-              <button onClick={() => setConfig('simMode', 'RUN')} className={`p-1.5 rounded ${uiState.simMode === 'RUN' ? 'bg-slate-900 text-emerald-400' : 'text-slate-500 hover:bg-slate-700'}`} title="Run"><Play size={14}/></button>
-              <button onClick={() => setConfig('simMode', 'PAUSE')} className={`p-1.5 rounded ${uiState.simMode === 'PAUSE' ? 'bg-slate-900 text-amber-400' : 'text-slate-500 hover:bg-slate-700'}`} title="Pause"><Pause size={14}/></button>
-              <button onClick={handleStep} disabled={uiState.simMode === 'RUN'} className="p-1.5 rounded text-slate-500 hover:text-cyan-400 disabled:opacity-30" title="Step Container"><SkipForward size={14}/></button>
+              <button onClick={() => setConfig('simMode', 'RUN')} className={`p-1.5 rounded ${uiState.simMode === 'RUN' ? 'bg-slate-900 text-emerald-400 shadow' : 'text-slate-500 hover:bg-slate-700'}`} title="Run"><Play size={14}/></button>
+              <button onClick={() => setConfig('simMode', 'PAUSE')} className={`p-1.5 rounded ${uiState.simMode === 'PAUSE' ? 'bg-slate-900 text-amber-400 shadow' : 'text-slate-500 hover:bg-slate-700'}`} title="Pause"><Pause size={14}/></button>
+              <button onClick={handleStep} disabled={uiState.simMode === 'RUN'} className="p-1.5 rounded text-slate-500 hover:bg-slate-700 hover:text-cyan-400 disabled:opacity-30" title="Step Container"><SkipForward size={14}/></button>
               <div className="w-px h-4 bg-slate-600 mx-1"></div>
               <button onClick={() => setConfig('trendFrozen', !uiState.trendFrozen)} className={`p-1.5 rounded ${uiState.trendFrozen ? 'bg-cyan-900/50 text-cyan-400 ring-1 ring-cyan-700' : 'text-slate-500 hover:bg-slate-700'}`} title="Freeze Trend"><Snowflake size={14}/></button>
           </div>
+
+          {/* DYNAMIC TAB CONTROLS */}
           {activeTab === 'CONTROL' && (
             <>
             <div className="flex items-center gap-2 bg-slate-800 p-1.5 rounded-lg border border-slate-700 shrink-0 ml-2">
@@ -53,6 +55,7 @@ export default function Header({ activeTab, setActiveTab, handleRecipeSelect, ha
             </>
           )}
         </div>
+
         <div className="hidden lg:flex flex-col items-end shrink-0 pl-4 border-l border-slate-700 ml-2 gap-1">
              <div className="flex items-center gap-2">
                  <button onClick={handleCIPToggle} className={`px-2 py-1 text-[9px] font-bold rounded flex items-center gap-1 border transition-colors ${uiState.cipMode ? 'bg-amber-900 text-amber-400 border-amber-700 animate-pulse' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white hover:bg-slate-700'}`}><Thermometer size={12}/> CIP</button>
