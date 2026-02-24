@@ -1,11 +1,10 @@
-import { useBackgroundWorkers } from './hooks/useBackgroundWorkers';
 import React, { useState, useRef, useCallback } from 'react';
 import { AlertOctagon, Lock, Thermometer } from 'lucide-react';
 import { usePhysicsStore, engine } from './store/physicsStore';
 import { useSimulationLoop } from './hooks/useSimulationLoop';
+import { useBackgroundWorkers } from './hooks/useBackgroundWorkers';
 import { PRODUCTS, PRICE_PER_LITER, REWORK_COST_PER_UNIT } from './utils/constants';
 import { initStats } from './utils/apcEngine';
-import TuningPanel from './components/TuningPanel';
 
 // Components
 import Header from './components/Header';
@@ -14,6 +13,7 @@ import ConveyorVisualizer from './components/ConveyorVisualizer';
 import TrendPanel from './components/TrendPanel';
 import KPIPanel from './components/KPIPanel';
 import ProductionDataView from './components/ProductionDataView';
+import TuningPanel from './components/TuningPanel';
 import LoginScreen from './components/LoginScreen';
 
 export default function App() {
@@ -26,25 +26,25 @@ export default function App() {
   const s2PathRef = useRef(null); 
   const cwPathRef = useRef(null); 
   const tempPathRef = useRef(null);
-  const conveyorRef = useRef(null);
-  const handleTuningChange = useCallback((key, value) => {
-      engine.mutate(s => { s.tuning[key] = value; });
-      engine.commit();
-  }, []);
+  const conveyorRef = useRef(null); 
 
-  const handleTuningMode = useCallback((mode) => {
-      engine.mutate(s => { s.tuningMode = mode; });
-      engine.commit();
-  }, []);
-
-  // Initialize the engine loop
+  // Initialize the engine loop and background workers
   const { runPhysicsTick, renderVisuals } = useSimulationLoop({
       isLoggedIn, s1PathRef, s2PathRef, cwPathRef, tempPathRef, conveyorRef
   });
-useBackgroundWorkers(isLoggedIn, uiState.silState);
+  useBackgroundWorkers(isLoggedIn, uiState.silState);
+
   // Action Dispatchers
   const setConfig = useCallback((key, val) => { engine.mutate(s => { s[key] = val; }); engine.commit(); }, []);
   
+  const handleTuningChange = useCallback((key, value) => {
+      engine.mutate(s => { s.tuning[key] = value; }); engine.commit();
+  }, []);
+
+  const handleTuningMode = useCallback((mode) => {
+      engine.mutate(s => { s.tuningMode = mode; }); engine.commit();
+  }, []);
+
   const handleManualInput = useCallback((key, value) => {
     if (uiState.opMode !== 'MANUAL' || uiState.silState !== 'NORMAL') return;
     engine.mutate(s => { s.mvs[key] = parseFloat(value) / 100; }); engine.commit(); 
@@ -113,33 +113,19 @@ useBackgroundWorkers(isLoggedIn, uiState.silState);
     document.body.appendChild(link); link.click(); document.body.removeChild(link);
   }, []);
 
-  const handlePrintReport = useCallback(() => {
-      // Basic print functionality can be implemented similarly to previous versions
-      window.print();
-  }, []);
+  const handlePrintReport = useCallback(() => { window.print(); }, []);
 
   if (!isLoggedIn) return <LoginScreen onLogin={() => setIsLoggedIn(true)} />;
 
   return (
-    <main className="flex-1 p-4 overflow-y-auto overflow-x-hidden bg-slate-50 relative">
-        {/* ... CIP Overlay code stays exactly the same ... */}
-
-        {activeTab === 'CONTROL' && (
-           <div className="max-w-[1920px] mx-auto w-full grid grid-cols-1 xl:grid-cols-[400px_1fr] gap-4 h-full relative z-10">
-               {/* Your Faceplates and Conveyor stuff stays exactly the same here */}
-               {/* ... */}
-           </div>
-        )}
-
-        {activeTab === 'DATA' && (
-           <ProductionDataView uiState={uiState} onExportCSV={handleExportCSV} onPrintReport={handlePrintReport} />
-        )}
-
-        {/* NEW ROUTING FOR TUNING TAB */}
-        {activeTab === 'TUNING' && (
-           <TuningPanel uiState={uiState} setTuning={handleTuningChange} setTuningMode={handleTuningMode} />
-        )}
-      </main>
+    <div className="h-screen w-full bg-slate-100 text-slate-800 font-sans flex flex-col overflow-hidden relative">
+      {uiState.eStopActive && (
+          <div className="absolute inset-0 z-50 bg-red-900/90 backdrop-blur-sm flex flex-col items-center justify-center text-white">
+              <AlertOctagon size={120} className="mb-6 animate-pulse text-red-400" />
+              <h1 className="text-6xl font-black tracking-widest mb-2">E-STOP ENGAGED</h1>
+              <p className="text-xl font-mono text-red-200 mb-8 tracking-wide">PUMPS & VALVES DE-ENERGIZED (SIL 3)</p>
+              <button onClick={clearEStop} className="px-8 py-4 bg-red-600 hover:bg-red-500 rounded-lg text-2xl font-bold shadow-2xl border-2 border-red-400 transition-all active:scale-95 text-white flex items-center gap-3"><Lock size={28} /> RESET INTERLOCK</button>
+          </div>
       )}
 
       <Header uiState={uiState} setConfig={setConfig} handleRecipeSelect={handleRecipeSelect} handleProductSelect={handleProductSelect} activeTab={activeTab} setActiveTab={setActiveTab} handleStep={handleStep} triggerEStop={triggerEStop} triggerCrash={triggerCrash} handleCIPToggle={handleCIPToggle} />
@@ -168,7 +154,8 @@ useBackgroundWorkers(isLoggedIn, uiState.silState);
            </div>
         )}
 
-        {activeTab === 'CONTROL' ? (
+        {/* TAB ROUTING */}
+        {activeTab === 'CONTROL' && (
            <div className="max-w-[1920px] mx-auto w-full grid grid-cols-1 xl:grid-cols-[400px_1fr] gap-4 h-full relative z-10">
              <div className="flex flex-col gap-2 min-w-0">
                 <div className="flex flex-col gap-2">
@@ -184,7 +171,16 @@ useBackgroundWorkers(isLoggedIn, uiState.silState);
                 <KPIPanel uiState={uiState} />
              </div>
            </div>
-        ) : <ProductionDataView uiState={uiState} onExportCSV={handleExportCSV} onPrintReport={handlePrintReport} />}
+        )}
+
+        {activeTab === 'DATA' && (
+           <ProductionDataView uiState={uiState} onExportCSV={handleExportCSV} onPrintReport={handlePrintReport} />
+        )}
+
+        {activeTab === 'TUNING' && (
+           <TuningPanel uiState={uiState} setTuning={handleTuningChange} setTuningMode={handleTuningMode} />
+        )}
+
       </main>
     </div>
   );
