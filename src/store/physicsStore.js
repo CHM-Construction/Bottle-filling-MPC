@@ -27,8 +27,7 @@ class PhysicsEngineStore {
             biases: { s1: 0.00, s2: 0.00, temp: 0.00 },
             kalman: { x_est: 0.0, p_est: 1.0, q: 0.001, r: 0.05 }, smithBuffer: [], decouplerActive: true,
             
-            // NEW TUNING LOGIC
-            tuningMode: 'AUTO', // 'AUTO' or 'MANUAL'
+            tuningMode: 'AUTO', 
             tuning: { imcLambda: 0.1, gain_s1: 1.0, gain_s2: 1.0, coupling: -0.35, bias_filter: 0.30, tau_11: 0.25, tau_22: 0.25, tau_21: 0.25, dt_21: 0.8 },
             ideal_tuning: { imcLambda: 0.1, gain_s1: 1.0, gain_s2: 1.0, coupling: -0.35, bias_filter: 0.30, tau_11: 0.25, tau_22: 0.25, tau_21: 0.25, dt_21: 0.8 },
             
@@ -45,7 +44,8 @@ class PhysicsEngineStore {
     commit = () => {
         this.state = { 
             ...this.state, mvs: { ...this.state.mvs }, actual_mvs: { ...this.state.actual_mvs }, pvsVol: { ...this.state.pvsVol }, pvsMass: { ...this.state.pvsMass }, active: { ...this.state.active }, biases: { ...this.state.biases },
-            loads: { ...this.state.loads }, drift: { ...this.state.drift }, counters: { ...this.state.counters }, tuning: { ...this.state.tuning },
+            loads: { ...this.state.loads }, drift: { ...this.state.drift }, counters: { ...this.state.counters }, 
+            tuning: { ...this.state.tuning }, ideal_tuning: { ...this.state.ideal_tuning }, // BUG FIX: Let React see the Auto-Tune changes!
             internal_model: { ...this.state.internal_model }, kalman: { ...this.state.kalman },
             mv_hist: { ...this.state.mv_hist }, req_mv_hist: { ...this.state.req_mv_hist },
             batchStats: { ...this.state.batchStats }, shiftStats: { MORNING: { ...this.state.shiftStats.MORNING }, AFTERNOON: { ...this.state.shiftStats.AFTERNOON }, NIGHT: { ...this.state.shiftStats.NIGHT } }, 
