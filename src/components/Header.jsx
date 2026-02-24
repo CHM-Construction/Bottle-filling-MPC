@@ -9,6 +9,12 @@ export default function Header({ activeTab, setActiveTab, handleRecipeSelect, ha
         <div className="flex items-center gap-4 shrink-0 mr-4">
           <div className="flex items-center gap-3"><ChmLogo size={32} /><div className="hidden md:block"><h1 className="font-black text-sm tracking-wider text-white">CHM AUTOMATION</h1><p className="text-[10px] text-cyan-400 font-mono">BEVERAGE DIVISION <span className="text-slate-500">| CASCADE IMC V6.1</span></p></div></div>
           <div className="h-8 w-px bg-slate-700 hidden md:block"></div>
+            <div className="flex bg-slate-800 p-1 rounded-lg border border-slate-700 shrink-0 gap-1">
+               <button onClick={() => setActiveTab('CONTROL')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-2 whitespace-nowrap ${activeTab === 'CONTROL' ? 'bg-cyan-900 text-cyan-300 border border-cyan-700 shadow-sm' : 'text-slate-400 hover:text-white hover:bg-slate-700'}`}><Activity size={14}/> PROCESS HMI</button>
+               <button onClick={() => setActiveTab('DATA')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-2 whitespace-nowrap ${activeTab === 'DATA' ? 'bg-cyan-900 text-cyan-300 border border-cyan-700 shadow-sm' : 'text-slate-400 hover:text-white hover:bg-slate-700'}`}><BarChart3 size={14}/> HISTORIAN {uiState.cloudQueueSize > 0 && <span className="bg-amber-500 text-black text-[9px] px-1.5 rounded-full">{uiState.cloudQueueSize}</span>}</button>
+               {/* NEW TUNING BUTTON */}
+               <button onClick={() => setActiveTab('TUNING')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-2 whitespace-nowrap ${activeTab === 'TUNING' ? 'bg-cyan-900 text-cyan-300 border border-cyan-700 shadow-sm' : 'text-slate-400 hover:text-white hover:bg-slate-700'}`}><Sliders size={14}/> ADAPTIVE TUNING</button>
+          </div>
         </div>
         <div className="flex-1 flex items-center gap-2 overflow-x-auto no-scrollbar mask-linear-fade pr-2">
           <div className="flex bg-slate-800 p-1 rounded-lg border border-slate-700 shrink-0 gap-1">
