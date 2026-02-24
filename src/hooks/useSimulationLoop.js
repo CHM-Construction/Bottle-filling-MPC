@@ -36,8 +36,6 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                 P.mvs.mv1 = 0; P.mvs.mv2 = 0; P.mvs.steam = 0; P.pvsMass.s1 *= 0.9; P.pvsMass.s2 *= 0.9; P.cipTemp = Math.max(25, P.cipTemp - 0.1); P.lastTick = Date.now(); return; 
             }
 
-            // BUG FIX: Strictly enforce Recipe Volumes into the Target Volume
-            if (Math.abs(P.targetVol - P.baseRecipeVol) > 0.001) P.targetVol = P.baseRecipeVol;
             const activeTargetTemp = P.activeProduct?.targetTemp || 72.0;
 
             // --- ADAPTIVE AUTO-TUNING ROUTINE ---
@@ -71,7 +69,7 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
   
             const getU = (hist, delaySec) => hist[Math.max(0, hist.length - 1 - Math.floor(delaySec / (TICK_RATE_MS / 1000)))] || 0;
   
-            // BUG FIX: Removed pneumatic pressure from temperature & Added TRUE Flow Feedforward!
+            // THERMAL PHYSICS
             const a_temp = Math.exp(-dt_sec / 3.75); 
             const u_steam_plant = getU(P.mv_hist.steam, 0.85); 
             const plantFlowLoad = (P.actual_mvs.mv1 + P.actual_mvs.mv2);
@@ -157,8 +155,6 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
             P.actual_mvs.mv2 = applyStiction(P.mvs.mv2 + (P.active.s2 ? dither : 0), P.actual_mvs.mv2, VALVE_DEADBAND);
             P.actual_mvs.steam = applyStiction(P.mvs.steam + dither, P.actual_mvs.steam, VALVE_DEADBAND);
   
-            // BUG FIX: TRUE PLANT PHYSICS
-            // Simulation Reality should strictly follow ideal physics, independent of user's bad tuning
             const I = P.ideal_tuning; 
             const a11_true = Math.exp(-dt_sec / Math.max(0.01, I.tau_11)); 
             const a22_true = Math.exp(-dt_sec / Math.max(0.01, I.tau_22)); 
@@ -172,8 +168,6 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
             P.plant.y22 = a22_true * P.plant.y22 + (1 - a22_true) * (I.gain_s2 * VALVE_CAPACITY_VOL * u2_eff_plant);
             P.plant.y21 = a21_true * P.plant.y21 + (1 - a21_true) * (I.coupling * VALVE_CAPACITY_VOL * u1_delayed_eff_plant);
 
-            // THE CONTROLLER'S INTERNAL MODEL
-            // Uses the user's manual tuning "T" sliders, creating mathematically measurable error Auto-Tune can fix
             const a11 = Math.exp(-dt_sec / Math.max(0.01, T.tau_11)); 
             const a22 = Math.exp(-dt_sec / Math.max(0.01, T.tau_22)); 
             const a21 = Math.exp(-dt_sec / Math.max(0.01, T.tau_21));
@@ -320,7 +314,7 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
     }, []);
 
     const renderVisuals = useCallback((P) => {
-        const visualTargetTemp = P.activeProduct?.targetTemp || 72.0; // Fallback to avoid screen crash
+        const visualTargetTemp = P.activeProduct?.targetTemp || 72.0; 
         
         if (s1PathRef.current && s2PathRef.current && cwPathRef.current && tempPathRef.current && P.history.length > 1) {
             s1PathRef.current.setAttribute('d', genPath(P.history, 's1_dev', P.targetVol, P.baseRecipeVol));
