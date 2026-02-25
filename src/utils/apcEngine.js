@@ -112,11 +112,14 @@ export const SupervisoryAPC = {
             let u_eff = (u_cand - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV);
             if (u_eff < 0) u_eff = 0; 
             
-            for(let k=0; k<Np; k++) {
+           for(let k=0; k<Np; k++) {
                 y = a * y + (1 - a) * (gain * VALVE_CAPACITY_VOL * u_eff);
                 
                 const coupling_y = couplingTraj ? couplingTraj[k] : 0;
-                const pred_vol = y + coupling_y + pDistVol; 
+                
+                // BUG FIX 1: The physical plant cannot have negative volume! 
+                // Clamp it here so the MPC doesn't hallucinate missing volume.
+                const pred_vol = Math.max(0, y + coupling_y + pDistVol); 
                 
                 const safeSG = (sgProfile && sgProfile[k]) ? sgProfile[k] : 1.0;
                 const pred_mass = (pred_vol * safeSG) + biasMass;
