@@ -43,7 +43,7 @@ export const applyStiction = (targetMV, actualMV, stickSlipPct) => {
 // ELITE SUPERVISORY CASCADE IMC ENGINE
 // ==========================================
 export const SupervisoryAPC = {
-    // BRANCH A: THERMAL IMC (Delay-Free Prediction + Bias + Flow Feedforward)
+    // BRANCH A: THERMAL IMC 
     solveThermal: (targetTemp, internalTemp, currentSteamMV, steamHistory, biasTemp, dt, flowFF = 0) => {
         const Np = 60; 
         const tau = 3.75; const theta = 0.85; 
@@ -67,7 +67,6 @@ export const SupervisoryAPC = {
             return (cost / Np) + 0.05 * Math.pow(u_cand - currentSteamMV, 2);
         };
 
-        // 1. Grid Search (Immune to exploding gradients)
         let best_u = currentSteamMV;
         let min_cost = Infinity;
         for (let u = 0.0; u <= 1.0; u += 0.05) {
@@ -75,7 +74,6 @@ export const SupervisoryAPC = {
             if (cost < min_cost) { min_cost = cost; best_u = u; }
         }
 
-        // 2. Fine-Tuning
         let u_opt = best_u;
         let v_u = 0; const lr = 0.05; const h = 0.001; const beta = 0.8;
         for(let i=0; i<15; i++) {
@@ -97,7 +95,7 @@ export const SupervisoryAPC = {
         return { steamMV: u_opt, trajectory };
     },
 
-    // BRANCH B: FLOW MPC (Absolute Physical Model + Future Coupling + SG Feedforward)
+    // BRANCH B: FLOW MPC 
     solveValve: (targetMass, currentMV, imc_y_state, couplingTraj, sgProfile, pDistVol, biasMass, gain, tau, lambda_tuning, dt) => {
         if (targetMass <= 0.0001) return 0;
         
@@ -112,13 +110,12 @@ export const SupervisoryAPC = {
             let u_eff = (u_cand - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV);
             if (u_eff < 0) u_eff = 0; 
             
-           for(let k=0; k<Np; k++) {
+            for(let k=0; k<Np; k++) {
                 y = a * y + (1 - a) * (gain * VALVE_CAPACITY_VOL * u_eff);
                 
                 const coupling_y = couplingTraj ? couplingTraj[k] : 0;
                 
-                // BUG FIX 1: The physical plant cannot have negative volume! 
-                // Clamp it here so the MPC doesn't hallucinate missing volume.
+                // <--- FIX: Ensure volume never goes negative mathematically
                 const pred_vol = Math.max(0, y + coupling_y + pDistVol); 
                 
                 const safeSG = (sgProfile && sgProfile[k]) ? sgProfile[k] : 1.0;
@@ -130,7 +127,6 @@ export const SupervisoryAPC = {
             return (cost / Np) + lambda * Math.pow(u_cand - currentMV, 2);
         };
 
-        // 1. Grid Search (Immune to flatplate deadbands and exploding gradients)
         let best_u = currentMV;
         let min_cost = Infinity;
         for (let u = 0.45; u <= 1.0; u += 0.02) {
@@ -138,7 +134,6 @@ export const SupervisoryAPC = {
             if (cost < min_cost) { min_cost = cost; best_u = u; }
         }
 
-        // 2. Fine-Tuning
         let u_opt = best_u;
         let v = 0; const beta = 0.8; const h = 0.001; const lr = 0.05;
         for(let i=0; i<15; i++) {
