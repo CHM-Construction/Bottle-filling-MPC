@@ -39,9 +39,6 @@ export const applyStiction = (targetMV, actualMV, stickSlipPct) => {
     return actualMV; 
 };
 
-// ==========================================
-// ELITE SUPERVISORY CASCADE IMC ENGINE
-// ==========================================
 export const SupervisoryAPC = {
     // BRANCH A: THERMAL IMC 
     solveThermal: (targetTemp, internalTemp, currentSteamMV, steamHistory, biasTemp, dt, flowFF = 0) => {
@@ -58,15 +55,22 @@ export const SupervisoryAPC = {
             let temp = internalTemp; 
             for(let k = 1; k <= Np; k++) {
                 let past_u = k <= thetaSteps ? getHist(thetaSteps - k) : u_cand;
-                const steadyStateTemp = 20 + (past_u * 100) - (flowFF * 15);
+                
+                // FIX 1: Split-Range Cooling & Heating Logic (Below 45% runs a chiller down to 2 degrees)
+                const thermal_effect = past_u >= 0.45 ? ((past_u - 0.45) / 0.55) * 80 : ((past_u - 0.45) / 0.45) * 18;
+                const steadyStateTemp = 20 + thermal_effect - (flowFF * 5);
+                
                 temp = a * temp + (1 - a) * steadyStateTemp;
                 const pred_temp = temp + biasTemp; 
-                const e = (safeTargetTemp - pred_temp) / safeTargetTemp;
+                
+                // Normalized error prevents tiny numbers from exploding
+                const e = (safeTargetTemp - pred_temp) / 100.0;
                 cost += (e * e) * (k / Np); 
             }
             return (cost / Np) + 0.05 * Math.pow(u_cand - currentSteamMV, 2);
         };
 
+        // FIX 2: Elite Two-Pass Grid Search (100% immune to gradient momentum traps)
         let best_u = currentSteamMV;
         let min_cost = Infinity;
         for (let u = 0.0; u <= 1.0; u += 0.05) {
@@ -75,19 +79,20 @@ export const SupervisoryAPC = {
         }
 
         let u_opt = best_u;
-        let v_u = 0; const lr = 0.05; const h = 0.001; const beta = 0.8;
-        for(let i=0; i<15; i++) {
-            const currentCost = simulateCost(u_opt);
-            const grad = (simulateCost(u_opt + h) - currentCost) / h;
-            v_u = beta * v_u + (1 - beta) * grad;
-            u_opt = Math.max(0, Math.min(1.0, u_opt - lr * v_u));
+        let fine_min_cost = min_cost;
+        const lower = Math.max(0.0, best_u - 0.05);
+        const upper = Math.min(1.0, best_u + 0.05);
+        for (let u = lower; u <= upper; u += 0.005) {
+            const cost = simulateCost(u);
+            if (cost < fine_min_cost) { fine_min_cost = cost; u_opt = u; }
         }
 
         const trajectory = [];
         let temp = internalTemp;
         for(let k = 1; k <= Np; k++) {
              let past_u = k <= thetaSteps ? getHist(thetaSteps - k) : u_opt;
-             const steadyStateTemp = 20 + (past_u * 100) - (flowFF * 15);
+             const thermal_effect = past_u >= 0.45 ? ((past_u - 0.45) / 0.55) * 80 : ((past_u - 0.45) / 0.45) * 18;
+             const steadyStateTemp = 20 + thermal_effect - (flowFF * 5);
              temp = a * temp + (1 - a) * steadyStateTemp;
              trajectory.push(temp + biasTemp);
         }
@@ -112,35 +117,36 @@ export const SupervisoryAPC = {
             
             for(let k=0; k<Np; k++) {
                 y = a * y + (1 - a) * (gain * VALVE_CAPACITY_VOL * u_eff);
-                
                 const coupling_y = couplingTraj ? couplingTraj[k] : 0;
                 
-                // <--- FIX: Ensure volume never goes negative mathematically
-                const pred_vol = Math.max(0, y + coupling_y + pDistVol); 
+                // FIX 3: Keep gradient alive even if mathematically negative so Valve 2 breaks the deadband!
+                const pred_vol_raw = y + coupling_y + pDistVol; 
                 
                 const safeSG = (sgProfile && sgProfile[k]) ? sgProfile[k] : 1.0;
-                const pred_mass = (pred_vol * safeSG) + biasMass;
+                const pred_mass = (pred_vol_raw * safeSG) + biasMass;
                 
-                const err = (targetMass - pred_mass) / (targetMass || 1);
+                // FIX 4: Soften gradient division so tiny recipes (0.33L) don't explode the solver
+                const err = (targetMass - pred_mass) / Math.max(0.5, targetMass);
                 cost += (err * err) * ((k+1) / Np);
             }
             return (cost / Np) + lambda * Math.pow(u_cand - currentMV, 2);
         };
 
         let best_u = currentMV;
-        let min_cost = Infinity;
-        for (let u = 0.45; u <= 1.0; u += 0.02) {
+        let min_cost = simulateCost(currentMV);
+        
+        for (let u = 0.0; u <= 1.0; u += 0.02) {
             const cost = simulateCost(u);
             if (cost < min_cost) { min_cost = cost; best_u = u; }
         }
 
         let u_opt = best_u;
-        let v = 0; const beta = 0.8; const h = 0.001; const lr = 0.05;
-        for(let i=0; i<15; i++) {
-            const currentCost = simulateCost(u_opt);
-            const grad = (simulateCost(u_opt + h) - currentCost) / h;
-            v = beta * v + (1 - beta) * grad;
-            u_opt = Math.max(0, Math.min(1.0, u_opt - lr * v)); 
+        let fine_min_cost = min_cost;
+        const lower = Math.max(0.0, best_u - 0.02);
+        const upper = Math.min(1.0, best_u + 0.02);
+        for (let u = lower; u <= upper; u += 0.002) {
+            const cost = simulateCost(u);
+            if (cost < fine_min_cost) { fine_min_cost = cost; u_opt = u; }
         }
         
         return u_opt;
