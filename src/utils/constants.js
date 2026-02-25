@@ -23,7 +23,7 @@ export const CONTROL_BATCH_SIZE = 1;
 export const HISTORY_BUFFER_SIZE = 150;    
 export const ADC_MAX_COUNTS = 16777215;    
 export const ADC_ZERO_OFFSET = 8388608;    
-export const VALVE_CAPACITY_VOL = 2.5; // Absolute Max Liters per second
+export const VALVE_CAPACITY_VOL = 3.5; // <--- FIX: Increased from 2.5 to 3.5
 
 // --- PC-CONTROLAB KERNEL ---
 export const ZERO_POINT_MV = 0.450;
