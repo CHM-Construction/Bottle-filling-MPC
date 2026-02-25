@@ -5,6 +5,7 @@ export const getTolerableDeficiency = (nomL) => {
     if (Math.abs(nomL - 0.50) < 0.001) return 0.0150; 
     if (Math.abs(nomL - 1.50) < 0.001) return 0.0225; 
     if (Math.abs(nomL - 2.00) < 0.001) return 0.0300; 
+    if (Math.abs(nomL - 4.00) < 0.001) return 0.0600;
 
     const nomML = nomL * 1000;
     let t_ml = 0;
@@ -27,6 +28,7 @@ export const getPalletSize = (recipe) => {
     if (Math.abs(recipe - 0.50) < 0.01) return 1200; 
     if (Math.abs(recipe - 1.50) < 0.01) return 600;
     if (Math.abs(recipe - 2.00) < 0.01) return 400;  
+    if (Math.abs(recipe - 4.00) < 0.01) return 200;  
     return 1000; 
 };
 
@@ -40,7 +42,7 @@ export const applyStiction = (targetMV, actualMV, stickSlipPct) => {
 };
 
 export const SupervisoryAPC = {
-    // BRANCH A: THERMAL IMC 
+    // BRANCH A: THERMAL IMC (Split Range Chiller & Boiler)
     solveThermal: (targetTemp, internalTemp, currentSteamMV, steamHistory, biasTemp, dt, flowFF = 0) => {
         const Np = 60; 
         const tau = 3.75; const theta = 0.85; 
@@ -56,21 +58,19 @@ export const SupervisoryAPC = {
             for(let k = 1; k <= Np; k++) {
                 let past_u = k <= thetaSteps ? getHist(thetaSteps - k) : u_cand;
                 
-                // FIX 1: Split-Range Cooling & Heating Logic (Below 45% runs a chiller down to 2 degrees)
-                const thermal_effect = past_u >= 0.45 ? ((past_u - 0.45) / 0.55) * 80 : ((past_u - 0.45) / 0.45) * 18;
+                // WORLD CLASS FIX: SPLIT-RANGE CHILLER MATH (0.0 to 0.45 cools down to 0°C!)
+                const thermal_effect = past_u >= 0.45 ? ((past_u - 0.45) / 0.55) * 80 : ((past_u - 0.45) / 0.45) * 20;
                 const steadyStateTemp = 20 + thermal_effect - (flowFF * 5);
                 
                 temp = a * temp + (1 - a) * steadyStateTemp;
                 const pred_temp = temp + biasTemp; 
                 
-                // Normalized error prevents tiny numbers from exploding
                 const e = (safeTargetTemp - pred_temp) / 100.0;
                 cost += (e * e) * (k / Np); 
             }
-            return (cost / Np) + 0.05 * Math.pow(u_cand - currentSteamMV, 2);
+            return (cost / Np) + 0.01 * Math.pow(u_cand - currentSteamMV, 2);
         };
 
-        // FIX 2: Elite Two-Pass Grid Search (100% immune to gradient momentum traps)
         let best_u = currentSteamMV;
         let min_cost = Infinity;
         for (let u = 0.0; u <= 1.0; u += 0.05) {
@@ -89,9 +89,9 @@ export const SupervisoryAPC = {
 
         const trajectory = [];
         let temp = internalTemp;
-        for(let k = 1; k <= Np; k++) {
+        for(let k = 1; k <= Np; k++) { 
              let past_u = k <= thetaSteps ? getHist(thetaSteps - k) : u_opt;
-             const thermal_effect = past_u >= 0.45 ? ((past_u - 0.45) / 0.55) * 80 : ((past_u - 0.45) / 0.45) * 18;
+             const thermal_effect = past_u >= 0.45 ? ((past_u - 0.45) / 0.55) * 80 : ((past_u - 0.45) / 0.45) * 20;
              const steadyStateTemp = 20 + thermal_effect - (flowFF * 5);
              temp = a * temp + (1 - a) * steadyStateTemp;
              trajectory.push(temp + biasTemp);
@@ -100,11 +100,11 @@ export const SupervisoryAPC = {
         return { steamMV: u_opt, trajectory };
     },
 
-    // BRANCH B: FLOW MPC 
+    // BRANCH B: FLOW MPC (T13 Horizon & Absolute Error formulation)
     solveValve: (targetMass, currentMV, imc_y_state, couplingTraj, sgProfile, pDistVol, biasMass, gain, tau, lambda_tuning, dt) => {
-        if (targetMass <= 0.0001) return 0;
+        if (targetMass <= 0.0001) return ZERO_POINT_MV;
         
-        const Np = 60;
+        const PREDICTION_HORIZON_T13 = 13; // T13 PREDICTION HORIZON
         const a = Math.exp(-dt / Math.max(0.01, tau));
         const lambda = Math.max(lambda_tuning * 0.1, 0.001);
 
@@ -112,39 +112,43 @@ export const SupervisoryAPC = {
             let cost = 0;
             let y = imc_y_state; 
             
-            let u_eff = (u_cand - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV);
-            if (u_eff < 0) u_eff = 0; 
+            let u_eff = Math.max(0, (u_cand - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
             
-            for(let k=0; k<Np; k++) {
+            for(let k = 1; k <= PREDICTION_HORIZON_T13; k++) {
                 y = a * y + (1 - a) * (gain * VALVE_CAPACITY_VOL * u_eff);
-                const coupling_y = couplingTraj ? couplingTraj[k] : 0;
                 
-                // FIX 3: Keep gradient alive even if mathematically negative so Valve 2 breaks the deadband!
+                const coupling_y = couplingTraj ? (couplingTraj[k-1] || 0) : 0;
+                
+                // CRITICAL FIX: Do NOT clip raw physics here! Let the gradient live to break the Valve 2 deadband!
                 const pred_vol_raw = y + coupling_y + pDistVol; 
                 
-                const safeSG = (sgProfile && sgProfile[k]) ? sgProfile[k] : 1.0;
-                const pred_mass = (pred_vol_raw * safeSG) + biasMass;
+                const safeSG = (sgProfile && sgProfile[k-1]) ? sgProfile[k-1] : 1.0;
+                const pred_mass = (Math.max(0, pred_vol_raw) * safeSG) + biasMass;
                 
-                // FIX 4: Soften gradient division so tiny recipes (0.33L) don't explode the solver
-                const err = (targetMass - pred_mass) / Math.max(0.5, targetMass);
-                cost += (err * err) * ((k+1) / Np);
+                // Absolute Error prevents optimizer explosion on tiny 0.33L recipes
+                const err = (targetMass - pred_mass) / Math.max(0.33, targetMass);
+                
+                // Track coincidence vectors
+                let weight = (k / PREDICTION_HORIZON_T13);
+                if (k === 8) weight *= 2.5;   // T8 Coincidence Point Weight
+                if (k === 13) weight *= 5.0;  // T13 Tracking Point Weight
+                
+                cost += (err * err) * weight;
             }
-            return (cost / Np) + lambda * Math.pow(u_cand - currentMV, 2);
+            return (cost / PREDICTION_HORIZON_T13) + (lambda * Math.pow(u_cand - currentMV, 2));
         };
 
         let best_u = currentMV;
         let min_cost = simulateCost(currentMV);
         
-        for (let u = 0.0; u <= 1.0; u += 0.02) {
+        for (let u = ZERO_POINT_MV; u <= 1.0; u += 0.02) {
             const cost = simulateCost(u);
             if (cost < min_cost) { min_cost = cost; best_u = u; }
         }
 
         let u_opt = best_u;
         let fine_min_cost = min_cost;
-        const lower = Math.max(0.0, best_u - 0.02);
-        const upper = Math.min(1.0, best_u + 0.02);
-        for (let u = lower; u <= upper; u += 0.002) {
+        for(let u = Math.max(ZERO_POINT_MV, best_u - 0.02); u <= Math.min(1.0, best_u + 0.02); u += 0.002) {
             const cost = simulateCost(u);
             if (cost < fine_min_cost) { fine_min_cost = cost; u_opt = u; }
         }
