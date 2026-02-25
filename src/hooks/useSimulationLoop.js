@@ -38,14 +38,32 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
 
             const activeTargetTemp = P.activeProduct?.targetTemp || 72.0;
 
-            // --- ADAPTIVE AUTO-TUNING ROUTINE ---
+            // --- TRUE MRAC ADAPTIVE AUTO-TUNING ---
             if (P.tuningMode === 'AUTO') {
-                const keys = Object.keys(P.tuning);
+                // 1. Rewrite internal IMC Valve Gains based on actual real-time physical error (Bias)!
+                if (P.active.s1 && P.targetVol > 0.1) {
+                    P.tuning.gain_s1 = Math.max(0.5, Math.min(2.0, P.tuning.gain_s1 + (P.biases.s1 * 0.01)));
+                }
+                if (P.active.s2 && P.targetVol > 0.1) {
+                    P.tuning.gain_s2 = Math.max(0.5, Math.min(2.0, P.tuning.gain_s2 + (P.biases.s2 * 0.01)));
+                }
+
+                // 2. Adjust MPC Lambda based on system noise (Tracking Variance to physically damp oscillations)
+                const recentNoise = P.batchStats.stdDev || 0;
+                let targetLambda = P.ideal_tuning.imcLambda;
+                if (recentNoise > 0.035) targetLambda = 0.80; // Heavy damping for ringing
+                else if (recentNoise > 0.015) targetLambda = 0.35; // Moderate damping
+                
+                P.tuning.imcLambda += (targetLambda - P.tuning.imcLambda) * 0.05;
+
+                // 3. Smoothly converge the delay constants
+                const keys = ['tau_11', 'tau_22', 'tau_21', 'coupling', 'bias_filter'];
                 keys.forEach(k => {
                     const delta = P.ideal_tuning[k] - P.tuning[k];
-                    if (Math.abs(delta) > 0.001) P.tuning[k] += delta * 0.02; // Converge back to physical truth
+                    if (Math.abs(delta) > 0.001) P.tuning[k] += delta * 0.02;
                 });
             }
+            
             if (P.silState === 'MPC_LOST') return;
             
             const now = Date.now(); const dt_sec = (now - P.lastTick) / 1000.0 || (TICK_RATE_MS/1000.0); P.lastTick = now; 
@@ -68,18 +86,19 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
             if (P.req_mv_hist.mv1.length > 50) P.req_mv_hist.mv1.shift(); if (P.req_mv_hist.mv2.length > 50) P.req_mv_hist.mv2.shift(); if (P.req_mv_hist.steam.length > 50) P.req_mv_hist.steam.shift();
  
             const getU = (hist, delaySec) => hist[Math.max(0, hist.length - 1 - Math.floor(delaySec / (TICK_RATE_MS / 1000)))] || 0;
- 
-            // THERMAL PHYSICS
+            const getThermalEffect = (mv) => mv >= 0.45 ? ((mv - 0.45) / 0.55) * 80 : ((mv - 0.45) / 0.45) * 18;
+
+            // THERMAL PHYSICS WITH SPLIT-RANGE CHILLER
             const a_temp = Math.exp(-dt_sec / 3.75); 
             const u_steam_plant = getU(P.mv_hist.steam, 0.85); 
             const plantFlowLoad = (P.actual_mvs.mv1 + P.actual_mvs.mv2);
             
-            P.plant.temp_y = a_temp * P.plant.temp_y + (1 - a_temp) * (20 + (u_steam_plant * 100) - (plantFlowLoad * 15));
+            P.plant.temp_y = a_temp * P.plant.temp_y + (1 - a_temp) * (20 + getThermalEffect(u_steam_plant) - (plantFlowLoad * 5));
             P.pvsTemp = P.plant.temp_y + P.drift.temp + noise() * 10;
  
             const u_steam_req = getU(P.req_mv_hist.steam, 0.85);
             const reqFlowLoad = (P.mvs.mv1 + P.mvs.mv2);
-            P.internal_model.temp_y = a_temp * P.internal_model.temp_y + (1 - a_temp) * (20 + (u_steam_req * 100) - (reqFlowLoad * 15));
+            P.internal_model.temp_y = a_temp * P.internal_model.temp_y + (1 - a_temp) * (20 + getThermalEffect(u_steam_req) - (reqFlowLoad * 5));
             
             const imc_pvsTemp = P.internal_model.temp_y;
             const rawTempDisturbance = P.pvsTemp - imc_pvsTemp;
@@ -150,7 +169,7 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                 }
             }
  
-            const dither = Math.sin(now / 31.8) * 0.021; 
+            const dither = Math.sin(now / 31.8) * 0.01; 
             P.actual_mvs.mv1 = applyStiction(P.mvs.mv1 + (P.active.s1 ? dither : 0), P.actual_mvs.mv1, VALVE_DEADBAND);
             P.actual_mvs.mv2 = applyStiction(P.mvs.mv2 + (P.active.s2 ? dither : 0), P.actual_mvs.mv2, VALVE_DEADBAND);
             P.actual_mvs.steam = applyStiction(P.mvs.steam + dither, P.actual_mvs.steam, VALVE_DEADBAND);
@@ -189,7 +208,6 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
             P.pvsMass.s1 = P.pvsVol.s1 * dynamicSG_Base;
             P.pvsMass.s2 = P.pvsVol.s2 * dynamicSG_Active;
  
-            // <--- FIX: Ensure Smith Predictor metrics don't go negative
             P.pssVol = { 
                 pss1: P.active.s1 ? Math.max(0, P.internal_model.y11 + p_dist_vol_s1) + (P.biases.s1 / PRODUCTS[0].sg20) : 0, 
                 pss2: P.active.s2 ? Math.max(0, P.internal_model.y22 + P.internal_model.y21 + p_dist_vol_s2) + (P.biases.s2 / P.activeProduct.sg20) : 0 
@@ -203,7 +221,6 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                 const imcSG_Base = PRODUCTS[0].sg20 / (1 + PRODUCTS[0].thermalExp * imcTempDelta);
                 const imcSG_Active = P.activeProduct.sg20 / (1 + P.activeProduct.thermalExp * imcTempDelta);
  
-                // <--- FIX: Ensure internal model math clamps at 0 Liters before calculating mass
                 const predVol1 = P.active.s1 ? Math.max(0, P.internal_model.y11 + p_dist_vol_s1) : 0;
                 const predVol2 = P.active.s2 ? Math.max(0, P.internal_model.y22 + P.internal_model.y21 + p_dist_vol_s2) : 0;
                 const dynamicPredictedMass = (predVol1 * imcSG_Base) + (predVol2 * imcSG_Active);
@@ -249,8 +266,6 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
  
                 if (P.opMode === 'AUTO') {
                     const safeCombinedTarget = combinedTargetMass || 1;
-                    
-                    // <--- FIX: Allow up to 50% bias adjustment so the MPC isn't choked
                     const maxBias = combinedTargetMass * 0.50; 
                     
                     const targetBias1 = trueDisturbanceMass * (targetMassS1/safeCombinedTarget);
