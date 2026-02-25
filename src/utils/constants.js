@@ -24,11 +24,12 @@ export const HISTORY_BUFFER_SIZE = 150;
 export const ADC_MAX_COUNTS = 16777215;    
 export const ADC_ZERO_OFFSET = 8388608;    
 
-// WORLD CLASS FIX: Dedicated Dosing Capacities
-export const VALVE_1_CAPACITY_VOL = 5.0; // Massive capacity for Base Flow
-export const VALVE_2_CAPACITY_VOL = 1.2; // High-precision capacity for Dosing Flow
+// WORLD CLASS FIX: Precision Capacities & Kinematic Linearity
+export const VALVE_1_CAPACITY_VOL = 5.0; // Main Flow
+export const VALVE_2_CAPACITY_VOL = 1.0; // High-Precision Dosing Flow
+export const VALVE_STROKE_TIME_SEC = 0.35; // Forces the beautiful S-Curve physical lag!
 
 // --- PC-CONTROLAB KERNEL ---
 export const ZERO_POINT_MV = 0.450;
 export const NOMINAL_PRESSURE = 4.5; 
-export const VALVE_DEADBAND = 0.02;
+export const VALVE_DEADBAND = 0.002; // Reduced to allow linear servo control
