@@ -4,7 +4,7 @@ import {
     TICK_RATE_MS, NOMINAL_PRESSURE, VALVE_DEADBAND, 
     BOTTLE_GENERATION_TICKS, CONTROL_BATCH_SIZE, PRODUCTS, 
     ZERO_POINT_MV, VALVE_1_CAPACITY_VOL, VALVE_2_CAPACITY_VOL, MAX_DELTA_MV, 
-    BELT_SPEED_PPS, HISTORY_BUFFER_SIZE, RECOVERY_CYCLES 
+    BELT_SPEED_PPS, HISTORY_BUFFER_SIZE, RECOVERY_CYCLES, VALVE_STROKE_TIME_SEC 
 } from '../utils/constants';
 import { SupervisoryAPC, applyStiction, getTolerableDeficiency } from '../utils/apcEngine';
 
@@ -12,23 +12,17 @@ export function genPath(data, key, targetVal, baseRecipeVol, isTemp = false) {
     if (data.length < 2) return "";
     const stepX = 1000 / (HISTORY_BUFFER_SIZE - 1);
     let pixelsPerUnit = isTemp ? 50 / 5.0 : 20 / getTolerableDeficiency(baseRecipeVol);
-    
     const points = data.map((d, i) => {
-      const displayIndex = data.length - 1 - i;
-      const xPos = 1000 - (displayIndex * stepX); 
-      const lowerBound = targetVal - (60 / pixelsPerUnit);
-      const upperBound = targetVal + (60 / pixelsPerUnit);
-      const val = Math.max(lowerBound, Math.min(upperBound, d[key] || targetVal));
-      const y = 50 - ((val - targetVal) * pixelsPerUnit); 
+      const displayIndex = data.length - 1 - i; const xPos = 1000 - (displayIndex * stepX); 
+      const lowerBound = targetVal - (60 / pixelsPerUnit); const upperBound = targetVal + (60 / pixelsPerUnit);
+      const val = Math.max(lowerBound, Math.min(upperBound, d[key] || targetVal)); const y = 50 - ((val - targetVal) * pixelsPerUnit); 
       return `${xPos.toFixed(1)},${y.toFixed(1)}`;
     });
     return `M ${points.join(" L ")}`;
 }
 
 export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef, tempPathRef, conveyorRef }) {
-    const prevTimeRef = useRef(); 
-    const accRef = useRef(0); 
-    const requestRef = useRef();
+    const prevTimeRef = useRef(); const accRef = useRef(0); const requestRef = useRef();
 
     const runPhysicsTick = useCallback(() => {
         engine.mutate(P => {
@@ -37,80 +31,12 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
             }
 
             const activeTargetTemp = P.activeProduct?.targetTemp || 72.0;
-
-            // =========================================================================
-            // TRUE MRAC ENGINE: Calculus-Based Intelligent Tuning (The MIT Rule)
-            // =========================================================================
-            if (P.tuningMode === 'AUTO' && P.opMode === 'AUTO') {
-                const lr_gain = 0.01; 
-                const lr_tau = 0.02;
-
-                // --- VALVE 1 ADAPTATION ---
-                if (P.active.s1 && P.targetVol > 0.05) {
-                    const err1 = P.biases.s1; // True Kalman Bias Error
-                    const u1_eff = Math.max(0, (P.actual_mvs.mv1 - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
-                    
-                    P.tuning.gain_s1 = Math.max(0.5, Math.min(2.0, P.tuning.gain_s1 + (err1 * lr_gain * u1_eff)));
-
-                    // Calculate derivative: Was the valve moving?
-                    const du1 = P.actual_mvs.mv1 - (P.mv_hist.mv1[Math.max(0, P.mv_hist.mv1.length - 10)] || ZERO_POINT_MV);
-                    if (Math.abs(du1) > 0.02) {
-                        // Plant is faster/slower than expected during transient
-                        P.tuning.tau_11 = Math.max(0.05, Math.min(1.5, P.tuning.tau_11 - (err1 * Math.sign(du1) * lr_tau)));
-                    }
-                }
-
-                // --- VALVE 2 ADAPTATION ---
-                if (P.active.s2 && P.activeProduct.ratio > 0 && P.targetVol > 0.05) {
-                    const err2 = P.biases.s2;
-                    const u2_eff = Math.max(0, (P.actual_mvs.mv2 - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
-                    
-                    P.tuning.gain_s2 = Math.max(0.5, Math.min(2.0, P.tuning.gain_s2 + (err2 * lr_gain * u2_eff)));
-
-                    const du2 = P.actual_mvs.mv2 - (P.mv_hist.mv2[Math.max(0, P.mv_hist.mv2.length - 10)] || ZERO_POINT_MV);
-                    if (Math.abs(du2) > 0.02) {
-                        P.tuning.tau_22 = Math.max(0.05, Math.min(1.5, P.tuning.tau_22 - (err2 * Math.sign(du2) * lr_tau)));
-                    }
-
-                    // --- RGA MATRIX COUPLING & DEAD TIME ADAPTATION ---
-                    if (P.active.s1) {
-                        const u1_eff_hist = Math.max(0, (P.mv_hist.mv1[Math.max(0, P.mv_hist.mv1.length - 10)] || ZERO_POINT_MV) - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV);
-                        if (u1_eff_hist > 0.2) {
-                            // If V1 is open and V2 misses target (err2 is negative), dynamically make coupling more negative!
-                            P.tuning.coupling = Math.max(-0.8, Math.min(0.0, P.tuning.coupling + (err2 * 0.01 * u1_eff_hist)));
-                        }
-                        
-                        const du1_older = (P.mv_hist.mv1[Math.max(0, P.mv_hist.mv1.length - 5)] || ZERO_POINT_MV) - (P.mv_hist.mv1[Math.max(0, P.mv_hist.mv1.length - 25)] || ZERO_POINT_MV);
-                        if (Math.abs(du1_older) > 0.05) {
-                            // Phase shift identification: S1 moved, but the delay was wrong
-                            P.tuning.dt_21 = Math.max(0.1, Math.min(2.0, P.tuning.dt_21 + (err2 * Math.sign(du1_older) * 0.02)));
-                        }
-                    }
-                }
-
-                // --- MPC VARIANCE DAMPING (Lambda) ---
-                const variance = P.batchStats.stdDev || 0;
-                let targetLambda = P.tuning.imcLambda;
-                if (variance > 0.025) targetLambda = 0.95; // High variance = slam the brakes!
-                else if (variance > 0.010) targetLambda = 0.50;
-                else if (variance < 0.005) targetLambda = 0.05; // Perfect precision = full speed!
-
-                P.tuning.imcLambda += (targetLambda - P.tuning.imcLambda) * 0.05;
-                
-                // Adaptive Bias Filter
-                const targetFilter = targetLambda > 0.5 ? 0.60 : 0.15;
-                P.tuning.bias_filter += (targetFilter - P.tuning.bias_filter) * 0.02;
-            }
-            // =========================================================================
+            const now = Date.now(); const dt_sec = (now - P.lastTick) / 1000.0 || (TICK_RATE_MS/1000.0); P.lastTick = now; 
 
             if (P.silState === 'MPC_LOST') return;
-            
-            const now = Date.now(); const dt_sec = (now - P.lastTick) / 1000.0 || (TICK_RATE_MS/1000.0); P.lastTick = now; 
-            const T = P.tuning; const I = P.ideal_tuning; const noise = () => (Math.random() - 0.5) * 0.005; 
+            const T = P.tuning; const I = P.ideal_tuning; const noise = () => (Math.random() - 0.5) * 0.002; 
  
-            if (P.cipMode) {
-                const alphaT = Math.exp(-dt_sec / 2.0); P.cipTemp = alphaT * P.cipTemp + (1 - alphaT) * 95.0 + noise()*100; return; 
-            } else P.cipTemp = Math.max(25, P.cipTemp - 0.05);
+            if (P.cipMode) { const alphaT = Math.exp(-dt_sec / 2.0); P.cipTemp = alphaT * P.cipTemp + (1 - alphaT) * 95.0 + noise()*100; return; } else P.cipTemp = Math.max(25, P.cipTemp - 0.05);
  
             const dynamicPressureDrop = (P.actual_mvs.mv1 + P.actual_mvs.mv2) * 0.8; 
             P.pneumaticHealth = NOMINAL_PRESSURE - dynamicPressureDrop + (Math.random() - 0.5) * 0.1;
@@ -125,6 +51,16 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
             if (P.req_mv_hist.mv1.length > 50) P.req_mv_hist.mv1.shift(); if (P.req_mv_hist.mv2.length > 50) P.req_mv_hist.mv2.shift(); if (P.req_mv_hist.steam.length > 50) P.req_mv_hist.steam.shift();
  
             const getU = (hist, delaySec) => hist[Math.max(0, hist.length - 1 - Math.floor(delaySec / (TICK_RATE_MS / 1000)))] || 0;
+
+            // =========================================================================
+            // KINEMATIC VALVE SLEW (Forces the beautiful S-Curve Linearity physically!)
+            // =========================================================================
+            const valve_slew_alpha = Math.exp(-dt_sec / VALVE_STROKE_TIME_SEC); 
+            const dither = Math.sin(now / 31.8) * 0.005; 
+            
+            P.actual_mvs.mv1 = applyStiction(valve_slew_alpha * P.actual_mvs.mv1 + (1 - valve_slew_alpha) * P.mvs.mv1 + (P.active.s1 ? dither : 0), P.actual_mvs.mv1, VALVE_DEADBAND);
+            P.actual_mvs.mv2 = applyStiction(valve_slew_alpha * P.actual_mvs.mv2 + (1 - valve_slew_alpha) * P.mvs.mv2 + (P.active.s2 ? dither : 0), P.actual_mvs.mv2, VALVE_DEADBAND);
+            P.actual_mvs.steam = applyStiction(valve_slew_alpha * P.actual_mvs.steam + (1 - valve_slew_alpha) * P.mvs.steam + dither, P.actual_mvs.steam, VALVE_DEADBAND);
 
             // 1. UPDATE PHYSICAL PLANT MATH
             const u1_eff_plant = Math.max(0, (P.actual_mvs.mv1 - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
@@ -187,8 +123,8 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
             const dynamicSG_Active = P.activeProduct.sg20 / (1 + P.activeProduct.thermalExp * tempDelta);
             P.dynamicSG = (dynamicSG_Base * (1 - P.activeProduct.ratio)) + (dynamicSG_Active * P.activeProduct.ratio);
  
-            const targetMassS1 = P.targetVol * (1 - P.activeProduct.ratio) * PRODUCTS[0].sg20;
-            const targetMassS2 = P.targetVol * P.activeProduct.ratio * P.activeProduct.sg20;
+            const targetMassS1_Raw = P.targetVol * (1 - P.activeProduct.ratio) * PRODUCTS[0].sg20;
+            const targetMassS2_Raw = P.targetVol * P.activeProduct.ratio * P.activeProduct.sg20;
 
             P.pvsMass.s1 = P.pvsVol.s1 * dynamicSG_Base;
             P.pvsMass.s2 = P.pvsVol.s2 * dynamicSG_Active;
@@ -207,7 +143,7 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
  
                     if (P.active.s1) {
                         P.mvs.mv1 = limit(P.mvs.mv1, SupervisoryAPC.solveValve(
-                            targetMassS1, P.mvs.mv1, P.internal_model.y11, null, sgBaseProfile, p_dist_vol_s1, P.biases.s1, T.gain_s1, T.tau_11, T.imcLambda, dt_sec, VALVE_1_CAPACITY_VOL
+                            targetMassS1_Raw, P.mvs.mv1, P.internal_model.y11, null, sgBaseProfile, p_dist_vol_s1, P.biases.s1, T.gain_s1, T.tau_11, T.imcLambda, dt_sec, VALVE_1_CAPACITY_VOL
                         ));
                     } else P.mvs.mv1 = 0;
  
@@ -215,7 +151,7 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                         const traj = []; let temp_y21 = P.internal_model.y21;
                         const a21 = Math.exp(-dt_sec / Math.max(0.01, T.tau_21));
                         const thetaSteps = Math.floor(T.dt_21 / dt_sec);
-                        for (let k = 1; k <= 13; k++) { 
+                        for (let k = 1; k <= 15; k++) { 
                             let past_u1 = k <= thetaSteps ? (P.req_mv_hist.mv1[Math.max(0, P.req_mv_hist.mv1.length - 1 - (thetaSteps - k))] || P.mvs.mv1) : P.mvs.mv1;
                             const past_u1_eff = Math.max(0, (past_u1 - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
                             temp_y21 = a21 * temp_y21 + (1 - a21) * (T.coupling * VALVE_1_CAPACITY_VOL * past_u1_eff);
@@ -227,19 +163,14 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                     if (P.active.s2 && P.activeProduct.ratio > 0) {
                         const couplingTraj = getCouplingTrajectory();
                         P.mvs.mv2 = limit(P.mvs.mv2, SupervisoryAPC.solveValve(
-                            targetMassS2, P.mvs.mv2, P.internal_model.y22, couplingTraj, sgActiveProfile, p_dist_vol_s2, P.biases.s2, T.gain_s2, T.tau_22, T.imcLambda, dt_sec, VALVE_2_CAPACITY_VOL
+                            targetMassS2_Raw, P.mvs.mv2, P.internal_model.y22, couplingTraj, sgActiveProfile, p_dist_vol_s2, P.biases.s2, T.gain_s2, T.tau_22, T.imcLambda, dt_sec, VALVE_2_CAPACITY_VOL
                         ));
                     } else P.mvs.mv2 = 0;
                     P.scanBuffer = [];
                 }
             }
 
-            const dither = Math.sin(now / 31.8) * 0.005; 
-            P.actual_mvs.mv1 = applyStiction(P.mvs.mv1 + (P.active.s1 ? dither : 0), P.actual_mvs.mv1, VALVE_DEADBAND);
-            P.actual_mvs.mv2 = applyStiction(P.mvs.mv2 + (P.active.s2 ? dither : 0), P.actual_mvs.mv2, VALVE_DEADBAND);
-            P.actual_mvs.steam = applyStiction(P.mvs.steam + dither, P.actual_mvs.steam, VALVE_DEADBAND);
-
-            // 5. SMITH PREDICTOR & KALMAN FILTER
+            // 5. SMITH PREDICTOR & MRAC SNAPSHOT
             P.tickCounter++;
             if (P.tickCounter >= BOTTLE_GENERATION_TICKS) {
                 P.tickCounter = 0; P.nextSource = 'MIX';
@@ -252,7 +183,17 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
  
                 if (P.active.s1 || P.active.s2) {
                     const bottleId = `${now}-${Math.floor(Math.random()*1000)}`;
-                    P.conveyor.push({ id: bottleId, source: P.nextSource, weightMass: P.pvsMass.s1 + P.pvsMass.s2, currentTemp: P.pvsTemp, position: 0.0, mvSnapshot: { mv1: P.mvs.mv1, mv2: P.mvs.mv2 } });
+                    
+                    // WORLD CLASS FIX: Take a snapshot of the derivatives for the Check Weigher MRAC to use 3 seconds from now!
+                    const u1_eff_snap = Math.max(0, (P.mvs.mv1 - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
+                    const u2_eff_snap = Math.max(0, (P.mvs.mv2 - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
+                    const delta_y11 = (T.gain_s1 * VALVE_1_CAPACITY_VOL * u1_eff_snap) - P.internal_model.y11;
+                    const delta_y22 = (T.gain_s2 * VALVE_2_CAPACITY_VOL * u2_eff_snap) - P.internal_model.y22;
+
+                    P.conveyor.push({ 
+                        id: bottleId, source: P.nextSource, weightMass: P.pvsMass.s1 + P.pvsMass.s2, currentTemp: P.pvsTemp, position: 0.0, 
+                        mvSnapshot: { u1_eff: u1_eff_snap, u2_eff: u2_eff_snap, delta_y11, delta_y22 } 
+                    });
                     P.smithBuffer.push({ id: bottleId, predictedMass: dynamicPredictedMass });
                 }
             }
@@ -265,18 +206,21 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
             });
             P.conveyor = nextConveyor;
  
+            // =========================================================
+            // WORLD CLASS FIX: SYNCHRONIZED DISCRETE MRAC
+            // =========================================================
             if (bottleAtSensor) {
                 const measuredMass = bottleAtSensor.weightMass + noise(); 
-                const combinedTargetMass = targetMassS1 + targetMassS2;
+                const combinedTargetMass = targetMassS1_Raw + targetMassS2_Raw;
                 const smithRecord = P.smithBuffer.find(b => b.id === bottleAtSensor.id);
                 const delayedPredMass = smithRecord ? smithRecord.predictedMass : combinedTargetMass;
                 P.smithBuffer = P.smithBuffer.filter(b => b.id !== bottleAtSensor.id); 
                 
                 const rawDisturbance = measuredMass - delayedPredMass;
 
-                // KALMAN FILTER DAMPING
-                P.kalman.q = 0.0001; 
-                P.kalman.r = 0.85;    
+                // KALMAN FILTER
+                P.kalman.q = 0.001; 
+                P.kalman.r = 0.05; // Restored trust in the sensor!
 
                 let { x_est, p_est, q, r } = P.kalman;
                 let p_pred = p_est + q;
@@ -285,7 +229,7 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                 p_est = (1 - k_gain) * p_pred;
                 P.kalman = { x_est, p_est, q, r };
                 
-                const trueDisturbanceMass = x_est; 
+                const trueDisturbanceMass = x_est; // THIS IS THE EXACT UNDERFILL AMOUNT
                 const filteredMass = delayedPredMass + trueDisturbanceMass; 
                 const legalSg20Mix = (PRODUCTS[0].sg20 * (1 - P.activeProduct.ratio)) + (P.activeProduct.sg20 * P.activeProduct.ratio);
                 const measuredVol = filteredMass / legalSg20Mix; 
@@ -293,13 +237,49 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
  
                 if (P.opMode === 'AUTO') {
                     const safeCombinedTarget = combinedTargetMass || 1;
-                    const maxBias = combinedTargetMass * 0.50; 
-                    const targetBias1 = trueDisturbanceMass * (targetMassS1/safeCombinedTarget);
-                    const targetBias2 = trueDisturbanceMass * (targetMassS2/safeCombinedTarget);
+                    const maxBias = combinedTargetMass * 0.80; 
+                    const targetBias1 = trueDisturbanceMass * (targetMassS1_Raw/safeCombinedTarget);
+                    const targetBias2 = trueDisturbanceMass * (targetMassS2_Raw/safeCombinedTarget);
  
                     P.biases.s1 = Math.max(-maxBias, Math.min(maxBias, (P.biases.s1 * (1 - T.bias_filter)) + (targetBias1 * T.bias_filter)));
                     P.biases.s2 = Math.max(-maxBias, Math.min(maxBias, (P.biases.s2 * (1 - T.bias_filter)) + (targetBias2 * T.bias_filter)));
- 
+
+                    // =========================================================================
+                    // WORLD CLASS FIX: Delay-Compensated MIT-Rule MRAC
+                    // =========================================================================
+                    if (P.tuningMode === 'AUTO' && bottleAtSensor.mvSnapshot) {
+                        const snap = bottleAtSensor.mvSnapshot;
+                        const err1_vol = targetBias1 / dynamicSG_Base; 
+                        const err2_vol = targetBias2 / dynamicSG_Active;
+
+                        const lr_gain = 0.05; const lr_tau = 0.02;
+
+                        if (P.active.s1 && targetMassS1_Raw > 0.05) {
+                            P.tuning.gain_s1 = Math.max(0.5, Math.min(2.0, P.tuning.gain_s1 + (err1_vol * lr_gain * snap.u1_eff)));
+                            if (Math.abs(snap.delta_y11) > 0.02) {
+                                P.tuning.tau_11 = Math.max(0.05, Math.min(1.5, P.tuning.tau_11 - (err1_vol * Math.sign(snap.delta_y11) * lr_tau)));
+                            }
+                        }
+
+                        if (P.active.s2 && targetMassS2_Raw > 0.05) {
+                            P.tuning.gain_s2 = Math.max(0.5, Math.min(2.0, P.tuning.gain_s2 + (err2_vol * lr_gain * snap.u2_eff)));
+                            if (Math.abs(snap.delta_y22) > 0.02) {
+                                P.tuning.tau_22 = Math.max(0.05, Math.min(1.5, P.tuning.tau_22 - (err2_vol * Math.sign(snap.delta_y22) * lr_tau)));
+                            }
+                            if (P.active.s1 && snap.u1_eff > 0.1) {
+                                // Dynamically learn the RGA coupling matrix based on S2 tracking error!
+                                P.tuning.coupling = Math.max(-0.8, Math.min(0.0, P.tuning.coupling + (err2_vol * 0.02 * snap.u1_eff)));
+                            }
+                        }
+
+                        // Adaptive Lambda based on Variance
+                        const variance = P.batchStats.stdDev || 0;
+                        let targetLambda = P.tuning.imcLambda;
+                        if (variance > 0.015) targetLambda = Math.min(0.95, targetLambda + 0.1); 
+                        else if (variance < 0.005) targetLambda = Math.max(0.01, targetLambda - 0.05); 
+                        P.tuning.imcLambda += (targetLambda - P.tuning.imcLambda) * 0.1;
+                    }
+
                     const botVol = P.pvsVol.cw;
                     const T_val_vol = getTolerableDeficiency(P.baseRecipeVol);
                     const T1_limit_vol = P.baseRecipeVol - T_val_vol;
@@ -333,8 +313,8 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
             }
             
             if (!P.trendFrozen && P.pvsVol.cw > 0.05) { 
-                const baseVolS1 = targetMassS1 / PRODUCTS[0].sg20;
-                const baseVolS2 = targetMassS2 / (targetMassS2 > 0 ? P.activeProduct.sg20 : 1);
+                const baseVolS1 = targetMassS1_Raw / PRODUCTS[0].sg20;
+                const baseVolS2 = targetMassS2_Raw / (targetMassS2_Raw > 0 ? P.activeProduct.sg20 : 1);
                 P.history.push({ s1_dev: P.targetVol + (P.pvsVol.s1 - baseVolS1), s2_dev: P.targetVol + (P.pvsVol.s2 - baseVolS2), cw_vol: P.pvsVol.cw, temp: P.pvsTemp, t: now }); 
                 if (P.history.length > HISTORY_BUFFER_SIZE) P.history.shift(); 
             }
