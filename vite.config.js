@@ -2,11 +2,11 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-export default defineConfig({
-  // Tell Vite that we are deploying to a GitHub Pages sub-directory
-  base: '/Bottle-filling-MPC/',
+export default defineConfig(({ command }) => ({
+  // FIX: Automatically switch paths! '/' for local dev, '/Bottle-filling-MPC/' for GitHub
+  base: command === 'build' ? '/Bottle-filling-MPC/' : '/',
   plugins: [
     react(),
     tailwindcss(),
   ],
-})
+}))
