@@ -23,7 +23,10 @@ export const CONTROL_BATCH_SIZE = 1;
 export const HISTORY_BUFFER_SIZE = 150;    
 export const ADC_MAX_COUNTS = 16777215;    
 export const ADC_ZERO_OFFSET = 8388608;    
-export const VALVE_CAPACITY_VOL = 5.0; // Upgraded for high-flow capacity
+
+// WORLD CLASS FIX: Dedicated Dosing Capacities
+export const VALVE_1_CAPACITY_VOL = 5.0; // Massive capacity for Base Flow
+export const VALVE_2_CAPACITY_VOL = 1.2; // High-precision capacity for Dosing Flow
 
 // --- PC-CONTROLAB KERNEL ---
 export const ZERO_POINT_MV = 0.450;
