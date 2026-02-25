@@ -38,30 +38,46 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
 
             const activeTargetTemp = P.activeProduct?.targetTemp || 72.0;
 
-            // --- TRUE MRAC ADAPTIVE AUTO-TUNING ---
-            if (P.tuningMode === 'AUTO') {
-                // 1. Rewrite internal IMC Valve Gains based on actual real-time physical error (Bias)!
-                if (P.active.s1 && P.targetVol > 0.1) {
-                    P.tuning.gain_s1 = Math.max(0.5, Math.min(2.0, P.tuning.gain_s1 + (P.biases.s1 * 0.01)));
-                }
-                if (P.active.s2 && P.targetVol > 0.1) {
-                    P.tuning.gain_s2 = Math.max(0.5, Math.min(2.0, P.tuning.gain_s2 + (P.biases.s2 * 0.01)));
+            // ==========================================================
+            // TRUE MRAC (Model Reference Adaptive Control) AUTO-TUNER
+            // ==========================================================
+            if (P.tuningMode === 'AUTO' && P.opMode === 'AUTO') {
+                const lr_gain = 0.05; // Learning rate for Gain Estimation
+                const lr_tau = 0.02;  // Learning rate for Time Constants
+
+                // 1. Valve 1 System Identification
+                if (P.active.s1 && P.targetVol > 0.1 && P.pvsVol.cw > 0.05) {
+                    const err_s1 = P.pvsVol.s1 - P.internal_model.y11; 
+                    P.tuning.gain_s1 = Math.max(0.5, Math.min(2.0, P.tuning.gain_s1 + (err_s1 * lr_gain)));
+
+                    const dv1 = P.actual_mvs.mv1 - (P.mv_hist.mv1[Math.max(0, P.mv_hist.mv1.length - 10)] || 0.45);
+                    if (Math.abs(dv1) > 0.05) {
+                        P.tuning.tau_11 = Math.max(0.1, Math.min(1.5, P.tuning.tau_11 - (err_s1 * Math.sign(dv1) * lr_tau)));
+                    }
                 }
 
-                // 2. Adjust MPC Lambda based on system noise (Tracking Variance to physically damp oscillations)
+                // 2. Valve 2 System Identification
+                if (P.active.s2 && P.targetVol > 0.1 && P.activeProduct.ratio > 0 && P.pvsVol.cw > 0.05) {
+                    const err_s2 = P.pvsVol.s2 - (P.internal_model.y22 + P.internal_model.y21); 
+                    P.tuning.gain_s2 = Math.max(0.5, Math.min(2.0, P.tuning.gain_s2 + (err_s2 * lr_gain)));
+
+                    const dv2 = P.actual_mvs.mv2 - (P.mv_hist.mv2[Math.max(0, P.mv_hist.mv2.length - 10)] || 0.45);
+                    if (Math.abs(dv2) > 0.05) {
+                        P.tuning.tau_22 = Math.max(0.1, Math.min(1.5, P.tuning.tau_22 - (err_s2 * Math.sign(dv2) * lr_tau)));
+                    }
+                    
+                    // Adapt Cross-Coupling RGA Matrix dynamically based on feedback!
+                    if (P.active.s1) {
+                        P.tuning.coupling = Math.max(-0.8, Math.min(0.0, P.tuning.coupling + (err_s2 * 0.01)));
+                    }
+                }
+
+                // 3. Dynamic Damping (Lambda) based on live SPC system variance
                 const recentNoise = P.batchStats.stdDev || 0;
                 let targetLambda = P.ideal_tuning.imcLambda;
-                if (recentNoise > 0.035) targetLambda = 0.80; // Heavy damping for ringing
-                else if (recentNoise > 0.015) targetLambda = 0.35; // Moderate damping
-                
-                P.tuning.imcLambda += (targetLambda - P.tuning.imcLambda) * 0.05;
-
-                // 3. Smoothly converge the delay constants
-                const keys = ['tau_11', 'tau_22', 'tau_21', 'coupling', 'bias_filter'];
-                keys.forEach(k => {
-                    const delta = P.ideal_tuning[k] - P.tuning[k];
-                    if (Math.abs(delta) > 0.001) P.tuning[k] += delta * 0.02;
-                });
+                if (recentNoise > 0.025) targetLambda = 0.85; // Violent process? Dampen heavily!
+                else if (recentNoise < 0.010) targetLambda = 0.10; // Stable? Speed it up!
+                P.tuning.imcLambda += (targetLambda - P.tuning.imcLambda) * 0.02;
             }
             
             if (P.silState === 'MPC_LOST') return;
@@ -86,9 +102,9 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
             if (P.req_mv_hist.mv1.length > 50) P.req_mv_hist.mv1.shift(); if (P.req_mv_hist.mv2.length > 50) P.req_mv_hist.mv2.shift(); if (P.req_mv_hist.steam.length > 50) P.req_mv_hist.steam.shift();
  
             const getU = (hist, delaySec) => hist[Math.max(0, hist.length - 1 - Math.floor(delaySec / (TICK_RATE_MS / 1000)))] || 0;
-            const getThermalEffect = (mv) => mv >= 0.45 ? ((mv - 0.45) / 0.55) * 80 : ((mv - 0.45) / 0.45) * 18;
+            const getThermalEffect = (mv) => mv >= 0.45 ? ((mv - 0.45) / 0.55) * 80 : ((mv - 0.45) / 0.45) * 20;
 
-            // THERMAL PHYSICS WITH SPLIT-RANGE CHILLER
+            // THERMAL PHYSICS
             const a_temp = Math.exp(-dt_sec / 3.75); 
             const u_steam_plant = getU(P.mv_hist.steam, 0.85); 
             const plantFlowLoad = (P.actual_mvs.mv1 + P.actual_mvs.mv2);
@@ -148,7 +164,7 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                         const a21 = Math.exp(-dt_sec / Math.max(0.01, T.tau_21));
                         const thetaSteps = Math.floor(T.dt_21 / dt_sec);
                         
-                        for (let k = 1; k <= 60; k++) {
+                        for (let k = 1; k <= 13; k++) { // Matches T13 Horizon
                             let past_u1 = k <= thetaSteps ? (P.req_mv_hist.mv1[Math.max(0, P.req_mv_hist.mv1.length - 1 - (thetaSteps - k))] || P.mvs.mv1) : P.mvs.mv1;
                             const past_u1_eff = Math.max(0, (past_u1 - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
                             temp_y21 = a21 * temp_y21 + (1 - a21) * (T.coupling * VALVE_CAPACITY_VOL * past_u1_eff);
@@ -157,7 +173,7 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                         return traj;
                     };
  
-                    if (P.active.s2) {
+                    if (P.active.s2 && P.activeProduct.ratio > 0) {
                         const couplingTraj = getCouplingTrajectory();
                         P.mvs.mv2 = limit(P.mvs.mv2, SupervisoryAPC.solveValve(
                             targetMassS2, P.mvs.mv2, P.internal_model.y22, couplingTraj,
