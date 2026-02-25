@@ -1,4 +1,4 @@
-import { ZERO_POINT_MV, VALVE_CAPACITY_VOL } from './constants';
+import { ZERO_POINT_MV } from './constants';
 
 export const getTolerableDeficiency = (nomL) => {
     if (Math.abs(nomL - 0.33) < 0.001) return 0.0099; 
@@ -9,8 +9,7 @@ export const getTolerableDeficiency = (nomL) => {
 
     const nomML = nomL * 1000;
     let t_ml = 0;
-    if (nomML < 5) t_ml = 0; 
-    else if (nomML <= 50) t_ml = nomML * 0.09;
+    if (nomML <= 50) t_ml = nomML * 0.09;
     else if (nomML <= 100) t_ml = 4.5;
     else if (nomML <= 200) t_ml = nomML * 0.045;
     else if (nomML <= 300) t_ml = 9.0;
@@ -42,7 +41,6 @@ export const applyStiction = (targetMV, actualMV, stickSlipPct) => {
 };
 
 export const SupervisoryAPC = {
-    // BRANCH A: THERMAL IMC (Split Range Chiller & Boiler)
     solveThermal: (targetTemp, internalTemp, currentSteamMV, steamHistory, biasTemp, dt, flowFF = 0) => {
         const Np = 60; 
         const tau = 3.75; const theta = 0.85; 
@@ -53,106 +51,94 @@ export const SupervisoryAPC = {
         const getHist = (ticks) => steamHistory[Math.max(0, steamHistory.length - 1 - ticks)] || currentSteamMV;
 
         const simulateCost = (u_cand) => {
-            let cost = 0;
-            let temp = internalTemp; 
+            let cost = 0; let temp = internalTemp; 
             for(let k = 1; k <= Np; k++) {
                 let past_u = k <= thetaSteps ? getHist(thetaSteps - k) : u_cand;
-                
-                // WORLD CLASS FIX: SPLIT-RANGE CHILLER MATH (0.0 to 0.45 cools down to 0°C!)
                 const thermal_effect = past_u >= 0.45 ? ((past_u - 0.45) / 0.55) * 80 : ((past_u - 0.45) / 0.45) * 20;
-                const steadyStateTemp = 20 + thermal_effect - (flowFF * 5);
-                
-                temp = a * temp + (1 - a) * steadyStateTemp;
-                const pred_temp = temp + biasTemp; 
-                
-                const e = (safeTargetTemp - pred_temp) / 100.0;
+                temp = a * temp + (1 - a) * (20 + thermal_effect - (flowFF * 5));
+                const e = (safeTargetTemp - (temp + biasTemp)) / 100.0;
                 cost += (e * e) * (k / Np); 
             }
-            return (cost / Np) + 0.01 * Math.pow(u_cand - currentSteamMV, 2);
+            return (cost / Np) + 0.05 * Math.pow(u_cand - currentSteamMV, 2);
         };
 
-        let best_u = currentSteamMV;
-        let min_cost = Infinity;
+        let best_u = currentSteamMV; let min_cost = Infinity;
         for (let u = 0.0; u <= 1.0; u += 0.05) {
             const cost = simulateCost(u);
             if (cost < min_cost) { min_cost = cost; best_u = u; }
         }
-
-        let u_opt = best_u;
-        let fine_min_cost = min_cost;
-        const lower = Math.max(0.0, best_u - 0.05);
-        const upper = Math.min(1.0, best_u + 0.05);
-        for (let u = lower; u <= upper; u += 0.005) {
+        let u_opt = best_u; let fine_min_cost = min_cost;
+        for (let u = Math.max(0, best_u - 0.05); u <= Math.min(1, best_u + 0.05); u += 0.005) {
             const cost = simulateCost(u);
             if (cost < fine_min_cost) { fine_min_cost = cost; u_opt = u; }
         }
 
-        const trajectory = [];
-        let temp = internalTemp;
+        const trajectory = []; let temp = internalTemp;
         for(let k = 1; k <= Np; k++) { 
              let past_u = k <= thetaSteps ? getHist(thetaSteps - k) : u_opt;
              const thermal_effect = past_u >= 0.45 ? ((past_u - 0.45) / 0.55) * 80 : ((past_u - 0.45) / 0.45) * 20;
-             const steadyStateTemp = 20 + thermal_effect - (flowFF * 5);
-             temp = a * temp + (1 - a) * steadyStateTemp;
+             temp = a * temp + (1 - a) * (20 + thermal_effect - (flowFF * 5));
              trajectory.push(temp + biasTemp);
         }
-
         return { steamMV: u_opt, trajectory };
     },
 
-    // BRANCH B: FLOW MPC (T13 Horizon & Absolute Error formulation)
-    solveValve: (targetMass, currentMV, imc_y_state, couplingTraj, sgProfile, pDistVol, biasMass, gain, tau, lambda_tuning, dt) => {
+    // WORLD CLASS FIX: Integrated T13 / T8 Horizon & Move Suppression Damping
+    solveValve: (targetMass, currentMV, imc_y_state, couplingTraj, sgProfile, pDistVol, biasMass, gain, tau, lambda_tuning, dt, capacityLimit) => {
         if (targetMass <= 0.0001) return ZERO_POINT_MV;
         
-        const PREDICTION_HORIZON_T13 = 13; // T13 PREDICTION HORIZON
+        const PREDICTION_HORIZON = 13; 
         const a = Math.exp(-dt / Math.max(0.01, tau));
-        const lambda = Math.max(lambda_tuning * 0.1, 0.001);
+        
+        // Massive move-suppression penalty for stability (Damping)
+        // The smaller the target, the more suppressed it must be to avoid wild oscillation
+        const size_multiplier = targetMass < 0.5 ? 4.0 : 1.0;
+        const lambda = Math.max(lambda_tuning, 0.01) * 30.0 * size_multiplier; 
 
         const simulateCost = (u_cand) => {
-            let cost = 0;
-            let y = imc_y_state; 
-            
+            let cost = 0; let y = imc_y_state; 
             let u_eff = Math.max(0, (u_cand - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
             
-            for(let k = 1; k <= PREDICTION_HORIZON_T13; k++) {
-                y = a * y + (1 - a) * (gain * VALVE_CAPACITY_VOL * u_eff);
-                
+            for(let k = 1; k <= PREDICTION_HORIZON; k++) {
+                y = a * y + (1 - a) * (gain * capacityLimit * u_eff);
                 const coupling_y = couplingTraj ? (couplingTraj[k-1] || 0) : 0;
                 
-                // CRITICAL FIX: Do NOT clip raw physics here! Let the gradient live to break the Valve 2 deadband!
-                const pred_vol_raw = y + coupling_y + pDistVol; 
-                
+                const pred_vol = Math.max(0, y + coupling_y + pDistVol); 
                 const safeSG = (sgProfile && sgProfile[k-1]) ? sgProfile[k-1] : 1.0;
-                const pred_mass = (Math.max(0, pred_vol_raw) * safeSG) + biasMass;
+                const pred_mass = (pred_vol * safeSG) + biasMass;
                 
-                // Absolute Error prevents optimizer explosion on tiny 0.33L recipes
-                const err = (targetMass - pred_mass) / Math.max(0.33, targetMass);
+                const err = (targetMass - pred_mass);
+                const norm_err = err / Math.max(0.1, targetMass);
                 
-                // Track coincidence vectors
-                let weight = (k / PREDICTION_HORIZON_T13);
-                if (k === 8) weight *= 2.5;   // T8 Coincidence Point Weight
-                if (k === 13) weight *= 5.0;  // T13 Tracking Point Weight
+                // Enforce T8 and T13 Coincidence Points
+                let weight = (k / PREDICTION_HORIZON);
+                if (k === 8) weight *= 4.0;   
+                if (k === 13) weight *= 8.0;  
                 
-                cost += (err * err) * weight;
+                cost += (norm_err * norm_err) * weight;
             }
-            return (cost / PREDICTION_HORIZON_T13) + (lambda * Math.pow(u_cand - currentMV, 2));
+            return (cost / PREDICTION_HORIZON) + (lambda * Math.pow(u_cand - currentMV, 2));
         };
 
-        let best_u = currentMV;
-        let min_cost = simulateCost(currentMV);
+        // Slew-rate limiting to strictly forbid 100% erratic valve swings
+        const max_move = 0.15; 
+        const lower_bound = Math.max(ZERO_POINT_MV, currentMV - max_move);
+        const upper_bound = Math.min(1.0, currentMV + max_move);
+
+        let best_u = currentMV; let min_cost = simulateCost(currentMV);
         
-        for (let u = ZERO_POINT_MV; u <= 1.0; u += 0.02) {
+        for (let u = lower_bound; u <= upper_bound; u += 0.02) {
             const cost = simulateCost(u);
             if (cost < min_cost) { min_cost = cost; best_u = u; }
         }
 
-        let u_opt = best_u;
-        let fine_min_cost = min_cost;
-        for(let u = Math.max(ZERO_POINT_MV, best_u - 0.02); u <= Math.min(1.0, best_u + 0.02); u += 0.002) {
+        let u_opt = best_u; let fine_min_cost = min_cost;
+        for(let u = Math.max(lower_bound, best_u - 0.02); u <= Math.min(upper_bound, best_u + 0.02); u += 0.002) {
             const cost = simulateCost(u);
             if (cost < fine_min_cost) { fine_min_cost = cost; u_opt = u; }
         }
         
+        if (Math.abs(u_opt - currentMV) < 0.005) return currentMV;
         return u_opt;
     }
 };
