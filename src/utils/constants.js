@@ -6,7 +6,7 @@ export const PRODUCTS = [
     { id: 'SYRUP_MIX', name: 'Carbonated Soda', sg20: 1.080, thermalExp: 0.00035, targetTemp: 3.0, color: '#f59e0b', ratio: 0.18 } 
 ];
 
-export const RECIPES = [0.33, 0.50, 1.50, 2.00]; 
+export const RECIPES = [0.33, 0.50, 1.50, 2.00, 4.00]; 
 export const PRICE_PER_KILOLITER = 25000.00; 
 export const PRICE_PER_LITER = PRICE_PER_KILOLITER / 1000; 
 export const REWORK_COST_PER_UNIT = 1.20; 
@@ -23,7 +23,7 @@ export const CONTROL_BATCH_SIZE = 1;
 export const HISTORY_BUFFER_SIZE = 150;    
 export const ADC_MAX_COUNTS = 16777215;    
 export const ADC_ZERO_OFFSET = 8388608;    
-export const VALVE_CAPACITY_VOL = 3.5; // <--- FIX: Increased from 2.5 to 3.5
+export const VALVE_CAPACITY_VOL = 5.0; // <--- FIX: Increased capacity to easily hit 2.0L+ recipes
 
 // --- PC-CONTROLAB KERNEL ---
 export const ZERO_POINT_MV = 0.450;
