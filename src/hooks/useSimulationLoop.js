@@ -50,25 +50,25 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
             
             const now = Date.now(); const dt_sec = (now - P.lastTick) / 1000.0 || (TICK_RATE_MS/1000.0); P.lastTick = now; 
             const T = P.tuning; const noise = () => (Math.random() - 0.5) * 0.005; 
-  
+ 
             if (P.cipMode) {
                 const alphaT = Math.exp(-dt_sec / 2.0); P.cipTemp = alphaT * P.cipTemp + (1 - alphaT) * 95.0 + noise()*100; return; 
             } else P.cipTemp = Math.max(25, P.cipTemp - 0.05);
-  
+ 
             const dynamicPressureDrop = (P.actual_mvs.mv1 + P.actual_mvs.mv2) * 0.8; 
             P.pneumaticHealth = NOMINAL_PRESSURE - dynamicPressureDrop + (Math.random() - 0.5) * 0.1;
             const pressureDisturbance = P.pneumaticHealth - NOMINAL_PRESSURE;
-  
+ 
             P.ambientTemp = 23.5 + 8.5 * Math.sin(((now / 30000) % 24 - 8) * (Math.PI / 12)); 
-  
+ 
             P.mv_hist.mv1.push(P.actual_mvs.mv1); P.mv_hist.mv2.push(P.actual_mvs.mv2); P.mv_hist.steam.push(P.actual_mvs.steam);
             if (P.mv_hist.mv1.length > 50) P.mv_hist.mv1.shift(); if (P.mv_hist.mv2.length > 50) P.mv_hist.mv2.shift(); if (P.mv_hist.steam.length > 50) P.mv_hist.steam.shift();
-  
+ 
             P.req_mv_hist.mv1.push(P.mvs.mv1); P.req_mv_hist.mv2.push(P.mvs.mv2); P.req_mv_hist.steam.push(P.mvs.steam);
             if (P.req_mv_hist.mv1.length > 50) P.req_mv_hist.mv1.shift(); if (P.req_mv_hist.mv2.length > 50) P.req_mv_hist.mv2.shift(); if (P.req_mv_hist.steam.length > 50) P.req_mv_hist.steam.shift();
-  
+ 
             const getU = (hist, delaySec) => hist[Math.max(0, hist.length - 1 - Math.floor(delaySec / (TICK_RATE_MS / 1000)))] || 0;
-  
+ 
             // THERMAL PHYSICS
             const a_temp = Math.exp(-dt_sec / 3.75); 
             const u_steam_plant = getU(P.mv_hist.steam, 0.85); 
@@ -76,7 +76,7 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
             
             P.plant.temp_y = a_temp * P.plant.temp_y + (1 - a_temp) * (20 + (u_steam_plant * 100) - (plantFlowLoad * 15));
             P.pvsTemp = P.plant.temp_y + P.drift.temp + noise() * 10;
-  
+ 
             const u_steam_req = getU(P.req_mv_hist.steam, 0.85);
             const reqFlowLoad = (P.mvs.mv1 + P.mvs.mv2);
             P.internal_model.temp_y = a_temp * P.internal_model.temp_y + (1 - a_temp) * (20 + (u_steam_req * 100) - (reqFlowLoad * 15));
@@ -85,7 +85,7 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
             const rawTempDisturbance = P.pvsTemp - imc_pvsTemp;
             const filterAlpha = Math.exp(-dt_sec / 2.0); 
             P.biases.temp = filterAlpha * P.biases.temp + (1 - filterAlpha) * rawTempDisturbance;
-  
+ 
             let tempTrajectory = new Array(60).fill(P.pvsTemp);
             if (P.opMode === 'AUTO' && P.silState === 'NORMAL') {
                 const thermalOutput = SupervisoryAPC.solveThermal(
@@ -95,15 +95,15 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                 tempTrajectory = thermalOutput.trajectory;
                 P.projectedTemp = tempTrajectory[tempTrajectory.length - 1];
             }
-  
+ 
             const tempDelta = P.pvsTemp - 20.0;
             const dynamicSG_Base = PRODUCTS[0].sg20 / (1 + PRODUCTS[0].thermalExp * tempDelta);
             const dynamicSG_Active = P.activeProduct.sg20 / (1 + P.activeProduct.thermalExp * tempDelta);
             P.dynamicSG = (dynamicSG_Base * (1 - P.activeProduct.ratio)) + (dynamicSG_Active * P.activeProduct.ratio);
-  
+ 
             const targetMassS1 = P.targetVol * (1 - P.activeProduct.ratio) * PRODUCTS[0].sg20;
             const targetMassS2 = P.targetVol * P.activeProduct.ratio * P.activeProduct.sg20;
-  
+ 
             // FLOW MPC
             if (P.opMode === 'AUTO' && P.silState === 'NORMAL') {
                 P.scanBuffer.push(1);
@@ -113,16 +113,16 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                     
                     const p_dist_vol_s1 = P.active.s1 ? (pressureDisturbance * 0.05) : 0;
                     const p_dist_vol_s2 = P.active.s2 ? (pressureDisturbance * 0.05) : 0;
-  
+ 
                     const limit = (o, n) => Math.max(0, Math.min(1, o + Math.max(-MAX_DELTA_MV, Math.min(MAX_DELTA_MV, n - o))));
-  
+ 
                     if (P.active.s1) {
                         P.mvs.mv1 = limit(P.mvs.mv1, SupervisoryAPC.solveValve(
                             targetMassS1, P.mvs.mv1, P.internal_model.y11, null,
                             sgBaseProfile, p_dist_vol_s1, P.biases.s1, T.gain_s1, T.tau_11, T.imcLambda, dt_sec
                         ));
                     } else P.mvs.mv1 = 0;
-  
+ 
                     const getCouplingTrajectory = () => {
                         const traj = [];
                         let temp_y21 = P.internal_model.y21;
@@ -137,7 +137,7 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                         }
                         return traj;
                     };
-  
+ 
                     if (P.active.s2) {
                         const couplingTraj = getCouplingTrajectory();
                         P.mvs.mv2 = limit(P.mvs.mv2, SupervisoryAPC.solveValve(
@@ -145,16 +145,16 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                             sgActiveProfile, p_dist_vol_s2, P.biases.s2, T.gain_s2, T.tau_22, T.imcLambda, dt_sec
                         ));
                     } else P.mvs.mv2 = 0;
-  
+ 
                     P.scanBuffer = [];
                 }
             }
-  
+ 
             const dither = Math.sin(now / 31.8) * 0.021; 
             P.actual_mvs.mv1 = applyStiction(P.mvs.mv1 + (P.active.s1 ? dither : 0), P.actual_mvs.mv1, VALVE_DEADBAND);
             P.actual_mvs.mv2 = applyStiction(P.mvs.mv2 + (P.active.s2 ? dither : 0), P.actual_mvs.mv2, VALVE_DEADBAND);
             P.actual_mvs.steam = applyStiction(P.mvs.steam + dither, P.actual_mvs.steam, VALVE_DEADBAND);
-  
+ 
             const I = P.ideal_tuning; 
             const a11_true = Math.exp(-dt_sec / Math.max(0.01, I.tau_11)); 
             const a22_true = Math.exp(-dt_sec / Math.max(0.01, I.tau_22)); 
@@ -163,7 +163,7 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
             const u1_eff_plant = Math.max(0, (P.actual_mvs.mv1 - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
             const u2_eff_plant = Math.max(0, (P.actual_mvs.mv2 - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
             const u1_delayed_eff_plant = Math.max(0, (getU(P.mv_hist.mv1, I.dt_21) - ZERO_POINT_MV) / (1.0 - ZERO_POINT_MV));
-  
+ 
             P.plant.y11 = a11_true * P.plant.y11 + (1 - a11_true) * (I.gain_s1 * VALVE_CAPACITY_VOL * u1_eff_plant);
             P.plant.y22 = a22_true * P.plant.y22 + (1 - a22_true) * (I.gain_s2 * VALVE_CAPACITY_VOL * u2_eff_plant);
             P.plant.y21 = a21_true * P.plant.y21 + (1 - a21_true) * (I.coupling * VALVE_CAPACITY_VOL * u1_delayed_eff_plant);
@@ -182,18 +182,19 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
             
             const p_dist_vol_s1 = P.active.s1 ? (pressureDisturbance * 0.05) : 0;
             const p_dist_vol_s2 = P.active.s2 ? (pressureDisturbance * 0.05) : 0;
-  
+ 
             P.pvsVol.s1 = Math.max(0, P.plant.y11 + p_dist_vol_s1 + P.loads.s1 + P.drift.s1 + noise());
             P.pvsVol.s2 = Math.max(0, P.plant.y22 + P.plant.y21 + p_dist_vol_s2 + P.loads.s2 + P.drift.s2 + noise());
-  
+ 
             P.pvsMass.s1 = P.pvsVol.s1 * dynamicSG_Base;
             P.pvsMass.s2 = P.pvsVol.s2 * dynamicSG_Active;
-  
+ 
+            // <--- FIX: Ensure Smith Predictor metrics don't go negative
             P.pssVol = { 
-                pss1: P.active.s1 ? P.internal_model.y11 + p_dist_vol_s1 + (P.biases.s1 / PRODUCTS[0].sg20) : 0, 
-                pss2: P.active.s2 ? P.internal_model.y22 + P.internal_model.y21 + p_dist_vol_s2 + (P.biases.s2 / P.activeProduct.sg20) : 0 
+                pss1: P.active.s1 ? Math.max(0, P.internal_model.y11 + p_dist_vol_s1) + (P.biases.s1 / PRODUCTS[0].sg20) : 0, 
+                pss2: P.active.s2 ? Math.max(0, P.internal_model.y22 + P.internal_model.y21 + p_dist_vol_s2) + (P.biases.s2 / P.activeProduct.sg20) : 0 
             };
-  
+ 
             P.tickCounter++;
             if (P.tickCounter >= BOTTLE_GENERATION_TICKS) {
                 P.tickCounter = 0; P.nextSource = 'MIX';
@@ -201,18 +202,19 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                 const imcTempDelta = P.internal_model.temp_y - 20.0;
                 const imcSG_Base = PRODUCTS[0].sg20 / (1 + PRODUCTS[0].thermalExp * imcTempDelta);
                 const imcSG_Active = P.activeProduct.sg20 / (1 + P.activeProduct.thermalExp * imcTempDelta);
-  
-                const predVol1 = P.active.s1 ? P.internal_model.y11 + p_dist_vol_s1 : 0;
-                const predVol2 = P.active.s2 ? P.internal_model.y22 + P.internal_model.y21 + p_dist_vol_s2 : 0;
+ 
+                // <--- FIX: Ensure internal model math clamps at 0 Liters before calculating mass
+                const predVol1 = P.active.s1 ? Math.max(0, P.internal_model.y11 + p_dist_vol_s1) : 0;
+                const predVol2 = P.active.s2 ? Math.max(0, P.internal_model.y22 + P.internal_model.y21 + p_dist_vol_s2) : 0;
                 const dynamicPredictedMass = (predVol1 * imcSG_Base) + (predVol2 * imcSG_Active);
-  
+ 
                 if (P.active.s1 || P.active.s2) {
                     const bottleId = `${now}-${Math.floor(Math.random()*1000)}`;
                     P.conveyor.push({ id: bottleId, source: P.nextSource, weightMass: P.pvsMass.s1 + P.pvsMass.s2, currentTemp: P.pvsTemp, position: 0.0, mvSnapshot: { mv1: P.mvs.mv1, mv2: P.mvs.mv2 } });
                     P.smithBuffer.push({ id: bottleId, predictedMass: dynamicPredictedMass });
                 }
             }
-  
+ 
             let bottleAtSensor = null; const nextConveyor = [];
             P.conveyor.forEach(bot => {
                 const nextPos = bot.position + BELT_SPEED_PPS;
@@ -220,7 +222,7 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                 if (nextPos < 110.0) { bot.position = nextPos; nextConveyor.push(bot); }
             });
             P.conveyor = nextConveyor;
-  
+ 
             if (bottleAtSensor) {
                 const measuredMass = bottleAtSensor.weightMass + noise(); 
                 
@@ -230,7 +232,7 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                 P.smithBuffer = P.smithBuffer.filter(b => b.id !== bottleAtSensor.id); 
                 
                 const rawDisturbance = measuredMass - delayedPredMass;
-  
+ 
                 let { x_est, p_est, q, r } = P.kalman;
                 let p_pred = p_est + q;
                 const k_gain = p_pred / (p_pred + r);
@@ -240,21 +242,23 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                 
                 const trueDisturbanceMass = x_est; 
                 const filteredMass = delayedPredMass + trueDisturbanceMass; 
-  
+ 
                 const legalSg20Mix = (PRODUCTS[0].sg20 * (1 - P.activeProduct.ratio)) + (P.activeProduct.sg20 * P.activeProduct.ratio);
                 const measuredVol = filteredMass / legalSg20Mix; 
                 P.pvsVol.cw = measuredVol; P.pvsMass.cw = filteredMass;
-  
+ 
                 if (P.opMode === 'AUTO') {
                     const safeCombinedTarget = combinedTargetMass || 1;
-                    const maxBias = combinedTargetMass * 0.15;
+                    
+                    // <--- FIX: Allow up to 50% bias adjustment so the MPC isn't choked
+                    const maxBias = combinedTargetMass * 0.50; 
                     
                     const targetBias1 = trueDisturbanceMass * (targetMassS1/safeCombinedTarget);
                     const targetBias2 = trueDisturbanceMass * (targetMassS2/safeCombinedTarget);
-  
+ 
                     P.biases.s1 = Math.max(-maxBias, Math.min(maxBias, (P.biases.s1 * (1 - T.bias_filter)) + (targetBias1 * T.bias_filter)));
                     P.biases.s2 = Math.max(-maxBias, Math.min(maxBias, (P.biases.s2 * (1 - T.bias_filter)) + (targetBias2 * T.bias_filter)));
-  
+ 
                     const botVol = P.pvsVol.cw;
                     const T_val_vol = getTolerableDeficiency(P.baseRecipeVol);
                     const T1_limit_vol = P.baseRecipeVol - T_val_vol;
@@ -264,7 +268,7 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                     if (botVol > P.baseRecipeVol) giveawayVol = botVol - P.baseRecipeVol; 
                     else if (botVol >= T1_limit_vol) savingsVol = P.baseRecipeVol - botVol; 
                     else underfillVol = P.baseRecipeVol - botVol; 
-  
+ 
                     const accumulate = (stats) => {
                         stats.count++; stats.volume += botVol; stats.giveawayVol += giveawayVol;
                         stats.underfillVol += underfillVol; stats.savingsVol += savingsVol;
@@ -276,13 +280,13 @@ export function useSimulationLoop({ isLoggedIn, s1PathRef, s2PathRef, cwPathRef,
                     if (Math.abs(P.pvsTemp - activeTargetTemp) < 3.0) {
                         accumulate(P.batchStats); accumulate(P.shiftStats[P.currentShift]); accumulate(P.dayStats);
                         P.lastVolumes.push(botVol); if (P.lastVolumes.length > 120) P.lastVolumes.shift(); 
-  
+ 
                         const activeRun = P.recipeRuns.length > 0 ? P.recipeRuns[P.recipeRuns.length - 1] : null;
                         if(activeRun) {
                             activeRun.count++; activeRun.volume += botVol;
                             activeRun.giveawayVol += giveawayVol; activeRun.wasteVol += underfillVol; activeRun.savingsVol += savingsVol;
                         }
-  
+ 
                         P.cloudQueue.push({ t: now, v: botVol, m: P.pvsMass.cw, p: P.activeProduct.id });
                         P.cloudQueueSize = P.cloudQueue.length;
                         P.counters.total++; 
